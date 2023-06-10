@@ -62,3 +62,17 @@ while (!(await checkSlotExists(targetBcSlot))) targetBcSlot--
 const targetSlotEpoch = targetBcSlot / slotsPerEpoch
 console.log(`targetBcSlot: ${targetBcSlot}`)
 console.log(`targetSlotEpoch: ${targetSlotEpoch}`)
+
+async function getBlockHashFromSlot(slotNumber) {
+  const url = new URL(`/eth/v1/beacon/blocks/${slotNumber}`, beaconRpcUrl)
+  const response = await fetch(url)
+  if (response.status !== 200)
+    console.warn(`Unexpected response status getting ${slotNumber} block: ${response.status}`)
+  const json = await response.json()
+  return json.data.message.body.eth1_data.block_hash
+}
+
+const targetElBlockHash = await getBlockHashFromSlot(targetBcSlot)
+console.log(`targetElBlockHash: ${targetElBlockHash}`)
+const targetElBlock = await provider.getBlock(targetElBlockHash)
+console.log(`targetElBlock.number: ${targetElBlock.number}`)
