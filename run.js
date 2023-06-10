@@ -39,12 +39,13 @@ const timeSinceStart = BigInt(latestBlockTime) - BigInt(startTime)
 const intervalsPassed = timeSinceStart / intervalTime
 console.log(`intervalsPassed: ${intervalsPassed}`)
 
-const endTime = startTime + (intervalTime * intervalsPassed)
-console.log(`endTime: ${endTime}`)
-
 const genesisTime = BigInt(genesisTimes.get(networkName))
 const secondsPerSlot = 12n
 const slotsPerEpoch = 32n
+
+const fudgeFactor = 32n // TODO: figure out why this was wrong in interval 10
+const endTime = startTime + (intervalTime * intervalsPassed) + fudgeFactor
+console.log(`endTime: ${endTime}`)
 
 const totalTimespan = endTime - genesisTime
 
