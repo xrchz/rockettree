@@ -20,7 +20,9 @@ console.log(`Using Rocket Storage ${await rocketStorage.getAddress()}`)
 const rocketRewardsPool = new ethers.Contract(
   await rocketStorage['getAddress(bytes32)'](ethers.id('contract.addressrocketRewardsPool')),
   ['function getClaimIntervalTimeStart() view returns (uint256)',
-   'function getClaimIntervalTime() view returns (uint256)'
+   'function getClaimIntervalTime() view returns (uint256)',
+   'function getPendingRPLRewards() view returns (uint256)',
+   'function getClaimingContractPerc(string) view returns (uint256)'
   ],
   provider)
 
@@ -75,3 +77,19 @@ async function getBlockNumberFromSlot(slotNumber) {
 
 const targetElBlock = await getBlockNumberFromSlot(targetBcSlot)
 console.log(`targetElBlock: ${targetElBlock}`)
+
+const atTarget = {blockTag: targetElBlock}
+
+const pendingRewards = await rocketRewardsPool.getPendingRPLRewards(atTarget)
+const collateralPercent = await rocketRewardsPool.getClaimingContractPerc("rocketClaimNode", atTarget)
+const oDaoPercent = await rocketRewardsPool.getClaimingContractPerc("rocketClaimTrustedNode", atTarget)
+const pDaoPercent = await rocketRewardsPool.getClaimingContractPerc("rocketClaimDAO", atTarget)
+
+const _100Percent = ethers.parseEther('1')
+const collateralRewards = (pendingRewards * collateralPercent) / _100Percent
+const oDaoRewards = (pendingRewards * oDaoPercent) / _100Percent
+const pDaoRewards = (pendingRewards * pDaoPercent) / _100Percent
+console.log(`pendingRewards: ${pendingRewards}`)
+console.log(`collateralRewards: ${collateralRewards}`)
+console.log(`oDaoRewards: ${oDaoRewards}`)
+console.log(`pDaoRewards: ${pDaoRewards}`)
