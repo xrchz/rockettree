@@ -24,10 +24,12 @@ const rocketRewardsPool = new ethers.Contract(
   ],
   provider)
 
-const startTime = await rocketRewardsPool.getClaimIntervalTimeStart()
+const startBlock = parseInt(process.env.START_BLOCK) || 'latest'
+
+const startTime = await rocketRewardsPool.getClaimIntervalTimeStart({blockTag: startBlock})
 console.log(`startTime: ${startTime}`)
 
-const intervalTime = await rocketRewardsPool.getClaimIntervalTime()
+const intervalTime = await rocketRewardsPool.getClaimIntervalTime({blockTag: startBlock})
 console.log(`intervalTime: ${intervalTime}`)
 
 const latestBlockTime = await provider.getBlock('latest').then(b => b.timestamp)
