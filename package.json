@@ -7,7 +7,7 @@
   "dependencies": {
     "commander": "10",
     "dotenv": "16",
-    "ethers": "6"
+    "ethers": "6",
+    "node-json-db": "2"
   }
 }
-

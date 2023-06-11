@@ -1,5 +1,9 @@
 import 'dotenv/config'
 import { ethers } from 'ethers'
+import { JsonDB, Config } from 'node-json-db'
+
+const dbFile = process.env.DB_FILE || 'db'
+const db = new JsonDB(new Config(dbFile))
 
 const rocketStorageAddresses = new Map()
 rocketStorageAddresses.set('mainnet', '0x1d8f8f00cfa6758d7bE78336684788Fb0ee0Fa46')
