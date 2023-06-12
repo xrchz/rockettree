@@ -2,6 +2,9 @@ import 'dotenv/config'
 import { ethers } from 'ethers'
 import PouchDB from 'pouchdb-node'
 
+const verbosity = parseInt(process.env.VERBOSITY) || 2
+const log = (v, s) => verbosity >= v ? console.log(s) : undefined
+
 const dbDir = process.env.DB_DIR || 'db'
 const db = new PouchDB(dbDir)
 
@@ -19,7 +22,7 @@ const networkName = await provider.getNetwork().then(n => n.name)
 const rocketStorage = new ethers.Contract(
   rocketStorageAddresses.get(networkName),
   ['function getAddress(bytes32) view returns (address)'], provider)
-console.log(`Using Rocket Storage ${await rocketStorage.getAddress()}`)
+log(2, `Using Rocket Storage ${await rocketStorage.getAddress()}`)
 
 const bigIntPrefix = 'BI:'
 const numberPrefix = 'N:'
@@ -86,35 +89,35 @@ const rocketRewardsPool = new ethers.Contract(
   provider)
 
 const startTime = await cachedCall(rocketRewardsPool, 'getClaimIntervalTimeStart', [], startBlock)
-console.log(`startTime: ${startTime}`)
+log(1, `startTime: ${startTime}`)
 
 const intervalTime = await cachedCall(rocketRewardsPool, 'getClaimIntervalTime', [], startBlock)
-console.log(`intervalTime: ${intervalTime}`)
+log(2, `intervalTime: ${intervalTime}`)
 
-const latestBlockTime = await provider.getBlock('latest').then(b => b.timestamp)
-console.log(`latestBlockTime: ${latestBlockTime}`)
+const latestBlockTime = await provider.getBlock('latest').then(b => BigInt(b.timestamp))
+log(2, `latestBlockTime: ${latestBlockTime}`)
 
-const timeSinceStart = BigInt(latestBlockTime) - BigInt(startTime)
+const timeSinceStart = latestBlockTime - startTime
 const intervalsPassed = timeSinceStart / intervalTime
-console.log(`intervalsPassed: ${intervalsPassed}`)
+log(2, `intervalsPassed: ${intervalsPassed}`)
 
 const genesisTime = genesisTimes.get(networkName)
 const secondsPerSlot = 12n
 const slotsPerEpoch = 32n
 
 const endTime = startTime + (intervalTime * intervalsPassed)
-console.log(`endTime: ${endTime}`)
+log(1, `endTime: ${endTime}`)
 
 const totalTimespan = endTime - genesisTime
-console.log(`totalTimespan: ${totalTimespan}`)
+log(2, `totalTimespan: ${totalTimespan}`)
 
 let targetBcSlot = totalTimespan / secondsPerSlot
 if (totalTimespan % secondsPerSlot) targetBcSlot++
 
 const targetSlotEpoch = targetBcSlot / slotsPerEpoch
-console.log(`targetSlotEpoch: ${targetSlotEpoch}`)
+log(1, `targetSlotEpoch: ${targetSlotEpoch}`)
 targetBcSlot = (targetSlotEpoch + 1n) * slotsPerEpoch - 1n
-console.log(`last (possibly missing) slot in epoch: ${targetBcSlot}`)
+log(2, `last (possibly missing) slot in epoch: ${targetBcSlot}`)
 
 async function checkSlotExists(slotNumber) {
   const path = `/eth/v1/beacon/headers/${slotNumber}`
@@ -128,7 +131,7 @@ async function checkSlotExists(slotNumber) {
 }
 while (!(await checkSlotExists(targetBcSlot))) targetBcSlot--
 
-console.log(`targetBcSlot: ${targetBcSlot}`)
+log(1, `targetBcSlot: ${targetBcSlot}`)
 
 async function getBlockNumberFromSlot(slotNumber) {
   const path = `/eth/v1/beacon/blocks/${slotNumber}`
@@ -154,9 +157,9 @@ async function getValidatorStatus(slotNumber, pubkey) {
 }
 
 const targetElBlock = await getBlockNumberFromSlot(targetBcSlot)
-console.log(`targetElBlock: ${targetElBlock}`)
-const targetElBlockTimestamp = await provider.getBlock(targetElBlock).then(b => b.timestamp)
-console.log(`targetElBlockTimestamp: ${targetElBlockTimestamp}`)
+log(1, `targetElBlock: ${targetElBlock}`)
+const targetElBlockTimestamp = await provider.getBlock(targetElBlock).then(b => BigInt(b.timestamp))
+log(2, `targetElBlockTimestamp: ${targetElBlockTimestamp}`)
 
 const pendingRewards = await cachedCall(
   rocketRewardsPool, 'getPendingRPLRewards', [], targetElBlock)
@@ -171,10 +174,10 @@ const _100Percent = ethers.parseEther('1')
 const collateralRewards = pendingRewards * collateralPercent / _100Percent
 const oDaoRewards = pendingRewards * oDaoPercent / _100Percent
 const pDaoRewards = pendingRewards * pDaoPercent / _100Percent
-console.log(`pendingRewards: ${pendingRewards}`)
-console.log(`collateralRewards: ${collateralRewards}`)
-console.log(`oDaoRewards: ${oDaoRewards}`)
-console.log(`pDaoRewards: ${pDaoRewards}`)
+log(2, `pendingRewards: ${pendingRewards}`)
+log(2, `collateralRewards: ${collateralRewards}`)
+log(2, `oDaoRewards: ${oDaoRewards}`)
+log(2, `pDaoRewards: ${pDaoRewards}`)
 
 const rocketNodeManager = new ethers.Contract(
   await getRocketAddress('rocketNodeManager', targetElBlock),
@@ -221,12 +224,12 @@ const rocketDAOProtocolSettingsNode = new ethers.Contract(
   provider)
 
 const nodeCount = await cachedCall(rocketNodeManager, 'getNodeCount', [], targetElBlock)
-console.log(`nodeCount: ${nodeCount}`)
+log(2, `nodeCount: ${nodeCount}`)
 const nodeIndices = Array.from(Array(parseInt(nodeCount)).keys())
 const nodeAddresses = await Promise.all(
   nodeIndices.map(i => cachedCall(rocketNodeManager, 'getNodeAt', [i], targetElBlock))
 )
-console.log(`nodeAddresses: ${nodeAddresses.slice(0, 5)}...`)
+log(3, `nodeAddresses: ${nodeAddresses.slice(0, 5)}...`)
 
 const ratio = await cachedCall(rocketNetworkPrices, 'getRPLPrice', [], targetElBlock)
 const minCollateralFraction = await cachedCall(
@@ -245,7 +248,7 @@ async function processNode(i) {
   const nodeAddress = nodeAddresses[i]
   const minipoolCount = await cachedCall(
     rocketMinipoolManager, 'getNodeMinipoolCount', [nodeAddress], targetElBlock)
-  console.log(`Processing ${nodeAddress}'s ${minipoolCount} minipools`)
+  log(3, `Processing ${nodeAddress}'s ${minipoolCount} minipools`)
   let eligibleBorrowedEth = 0n
   let eligibleBondedEth = 0n
   async function processMinipool(addr) {
@@ -268,7 +271,7 @@ async function processNode(i) {
   }
   const minipoolIndicesToProcess = Array.from(Array(parseInt(minipoolCount)).keys())
   while (minipoolIndicesToProcess.length) {
-    console.log(`${minipoolIndicesToProcess.length} minipools left for ${nodeAddress}`)
+    log(4, `${minipoolIndicesToProcess.length} minipools left for ${nodeAddress}`)
     await Promise.all(
       minipoolIndicesToProcess.splice(0, MAX_CONCURRENT_MINIPOOLS)
       .map(i => cachedCall(rocketMinipoolManager, 'getNodeMinipoolAt', [nodeAddress, i], targetElBlock)
@@ -284,23 +287,23 @@ async function processNode(i) {
                            nodeStake < maxCollateral ? nodeStake : maxCollateral
   const registrationTime = await cachedCall(
     rocketNodeManager, 'getNodeRegistrationTime', [nodeAddress], targetElBlock)
-  const nodeAge = BigInt(targetElBlockTimestamp) - registrationTime
+  const nodeAge = targetElBlockTimestamp - registrationTime
   if (nodeAge < intervalTime)
     nodeEffectiveStake = nodeEffectiveStake * nodeAge / intervalTime
-  console.log(`${nodeAddress} effective stake: ${nodeEffectiveStake}`)
+  log(2, `${nodeAddress} effective stake: ${nodeEffectiveStake}`)
   nodeEffectiveStakes.set(nodeAddress, nodeEffectiveStake)
   totalEffectiveRplStake += nodeEffectiveStake
 }
 
 const nodeIndicesToProcess = nodeIndices.slice()
 while (nodeIndicesToProcess.length) {
-  console.log(`${nodeIndicesToProcess.length} nodes left to process`)
+  log(3, `${nodeIndicesToProcess.length} nodes left to process`)
   await Promise.all(
     nodeIndicesToProcess.splice(0, MAX_CONCURRENT_NODES)
     .map(i => processNode(i))
   )
 }
-console.log(`totalEffectiveRplStake: ${totalEffectiveRplStake}`)
+log(1, `totalEffectiveRplStake: ${totalEffectiveRplStake}`)
 
 const nodeCollateralAmounts = new Map()
 let totalCalculatedCollateralRewards = 0n
@@ -313,7 +316,7 @@ for (const nodeAddress of nodeAddresses) {
 
 const numberOfMinipools = cachedCall(rocketMinipoolManager, 'getMinipoolCount', [], targetElBlock)
 
-console.log(`totalCalculatedCollateralRewards: ${totalCalculatedCollateralRewards}`)
-if (collateralRewards - totalCalculatedCollateralRewards > numberOfMinipools) {
+log(1, `totalCalculatedCollateralRewards: ${totalCalculatedCollateralRewards}`)
+if (collateralRewards - totalCalculatedCollateralRewards > numberOfMinipools)
   throw new Error('collateral calculation has excessive error')
 }
