@@ -8,6 +8,6 @@
     "commander": "10",
     "dotenv": "16",
     "ethers": "6",
-    "node-json-db": "2"
+    "pouchdb-node": "8"
   }
 }

@@ -1,9 +1,9 @@
 import 'dotenv/config'
 import { ethers } from 'ethers'
-import { JsonDB, Config } from 'node-json-db'
+import PouchDB from 'pouchdb-node'
 
-const dbFile = process.env.DB_FILE || 'db'
-const db = new JsonDB(new Config(dbFile))
+const dbDir = process.env.DB_DIR || 'db'
+const db = new PouchDB(dbDir)
 
 const rocketStorageAddresses = new Map()
 rocketStorageAddresses.set('mainnet', '0x1d8f8f00cfa6758d7bE78336684788Fb0ee0Fa46')
@@ -36,7 +36,9 @@ function serialise(result) {
   }
 }
 function deserialise(data) {
-  if (data.startsWith(bigIntPrefix))
+  if (typeof data !== 'string')
+    return data
+  else if (data.startsWith(bigIntPrefix))
     return BigInt(`0x${data.substring(bigIntPrefix.length)}`)
   else if (data.startsWith(numberPrefix))
     return parseInt(`0x${data.substring(numberPrefix.length)}`)
@@ -47,29 +49,26 @@ function deserialise(data) {
 async function cachedCall(contract, fn, args, blockTag) {
   const address = await contract.getAddress()
   const key = `/${networkName}/${blockTag.toString()}/${address}/${fn}/${args.map(a => a.toString()).join()}`
-  if (await db.exists(key)) {
-    return await db.getData(key).then(data => deserialise(data))
-  }
-  else {
-    const result = await contract[fn](...args, {blockTag})
-    await db.push(key, serialise(result))
-    return result
-  }
+  return await db.get(key)
+    .then(
+      doc => deserialise(doc.value),
+      async err => {
+        const result = await contract[fn](...args, {blockTag})
+        await db.put({_id: key, value: serialise(result)})
+        return result
+      }
+    )
 }
 
 async function cachedBeacon(path, result) {
   const key = `/${networkName}/${path}`
   if (result === undefined) {
-    try {
-      const data = await db.getData(key).then(data => deserialise(data))
-    }
-    catch (e) {
-      return result
-    }
+    return await db.get(key).then(
+      doc => deserialise(doc.value),
+      err => result
+    )
   }
-  else {
-    await db.push(key, serialise(result))
-  }
+  else await db.put({_id: key, value: serialise(result)})
 }
 
 const getRocketAddress = (name, blockTag) =>
