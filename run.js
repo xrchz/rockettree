@@ -175,3 +175,145 @@ console.log(`pendingRewards: ${pendingRewards}`)
 console.log(`collateralRewards: ${collateralRewards}`)
 console.log(`oDaoRewards: ${oDaoRewards}`)
 console.log(`pDaoRewards: ${pDaoRewards}`)
+
+const rocketNodeManager = new ethers.Contract(
+  await getRocketAddress('rocketNodeManager', targetElBlock),
+  ['function getNodeCount() view returns (uint256)',
+   'function getNodeAt(uint256) view returns (address)',
+   'function getNodeRegistrationTime(address) view returns (uint256)'
+  ],
+  provider)
+
+const rocketNodeStaking = new ethers.Contract(
+  await getRocketAddress('rocketNodeStaking', targetElBlock),
+  ['function getNodeRPLStake(address) view returns (uint256)'],
+  provider)
+
+const rocketMinipoolManager = new ethers.Contract(
+  await getRocketAddress('rocketMinipoolManager', targetElBlock),
+  ['function getNodeMinipoolAt(address, uint256) view returns (address)',
+   'function getNodeMinipoolCount(address) view returns (uint256)',
+   'function getMinipoolPubkey(address) view returns (bytes)',
+   'function getMinipoolCount() view returns (uint256)'
+  ],
+  provider)
+
+const getMinipool = (addr) =>
+  new ethers.Contract(addr,
+    ['function getStatus() view returns (uint8)',
+     'function getUserDepositBalance() view returns (uint256)',
+     'function getNodeDepositBalance() view returns (uint256)'
+    ],
+    provider)
+
+const stakingStatus = 2
+
+const rocketNetworkPrices = new ethers.Contract(
+  await getRocketAddress('rocketNetworkPrices', targetElBlock),
+  ['function getRPLPrice() view returns (uint256)'],
+  provider)
+
+const rocketDAOProtocolSettingsNode = new ethers.Contract(
+  await getRocketAddress('rocketDAOProtocolSettingsNode', targetElBlock),
+  ['function getMinimumPerMinipoolStake() view returns (uint256)',
+   'function getMaximumPerMinipoolStake() view returns (uint256)'
+  ],
+  provider)
+
+const nodeCount = await cachedCall(rocketNodeManager, 'getNodeCount', [], targetElBlock)
+console.log(`nodeCount: ${nodeCount}`)
+const nodeIndices = Array.from(Array(parseInt(nodeCount)).keys())
+const nodeAddresses = await Promise.all(
+  nodeIndices.map(i => cachedCall(rocketNodeManager, 'getNodeAt', [i], targetElBlock))
+)
+console.log(`nodeAddresses: ${nodeAddresses.slice(0, 5)}...`)
+
+const ratio = await cachedCall(rocketNetworkPrices, 'getRPLPrice', [], targetElBlock)
+const minCollateralFraction = await cachedCall(
+  rocketDAOProtocolSettingsNode, 'getMinimumPerMinipoolStake', [], targetElBlock)
+const maxCollateralFraction = await cachedCall(
+  rocketDAOProtocolSettingsNode, 'getMaximumPerMinipoolStake', [], targetElBlock)
+
+let totalEffectiveRplStake = 0n
+
+const nodeEffectiveStakes = new Map()
+
+const MAX_CONCURRENT_MINIPOOLS = parseInt(process.env.MAX_CONCURRENT_MINIPOOLS) || 10
+const MAX_CONCURRENT_NODES = parseInt(process.env.MAX_CONCURRENT_NODES) || 10
+
+async function processNode(i) {
+  const nodeAddress = nodeAddresses[i]
+  const minipoolCount = await cachedCall(
+    rocketMinipoolManager, 'getNodeMinipoolCount', [nodeAddress], targetElBlock)
+  console.log(`Processing ${nodeAddress}'s ${minipoolCount} minipools`)
+  let eligibleBorrowedEth = 0n
+  let eligibleBondedEth = 0n
+  async function processMinipool(addr) {
+    const minipool = getMinipool(addr)
+    const minipoolStatus = await cachedCall(minipool, 'getStatus', [], targetElBlock)
+    if (minipoolStatus != stakingStatus) return
+    const pubkey = await cachedCall(
+      rocketMinipoolManager, 'getMinipoolPubkey', [addr], targetElBlock)
+    const validatorStatus = await getValidatorStatus(targetBcSlot, pubkey)
+    const activationEpoch = validatorStatus.activation_epoch
+    const exitEpoch = validatorStatus.exit_epoch
+    const eligible = activationEpoch != 'FAR_FUTURE_EPOCH' && BigInt(activationEpoch) < targetSlotEpoch &&
+                     (exitEpoch == 'FAR_FUTURE_EPOCH' || targetSlotEpoch < BigInt(exitEpoch))
+    if (eligible) {
+      const borrowedEth = await cachedCall(minipool, 'getUserDepositBalance', [], targetElBlock)
+      eligibleBorrowedEth += BigInt(borrowedEth)
+      const bondedEth = await cachedCall(minipool, 'getNodeDepositBalance', [], targetElBlock)
+      eligibleBondedEth += BigInt(bondedEth)
+    }
+  }
+  const minipoolIndicesToProcess = Array.from(Array(parseInt(minipoolCount)).keys())
+  while (minipoolIndicesToProcess.length) {
+    console.log(`${minipoolIndicesToProcess.length} minipools left for ${nodeAddress}`)
+    await Promise.all(
+      minipoolIndicesToProcess.splice(0, MAX_CONCURRENT_MINIPOOLS)
+      .map(i => cachedCall(rocketMinipoolManager, 'getNodeMinipoolAt', [nodeAddress, i], targetElBlock)
+                .then(addr => processMinipool(addr)))
+    )
+  }
+  const minCollateral = eligibleBorrowedEth * minCollateralFraction / ratio
+  const maxCollateral = eligibleBondedEth * maxCollateralFraction / ratio
+  const nodeStake = BigInt(await cachedCall(
+    rocketNodeStaking, 'getNodeRPLStake', [nodeAddress], targetElBlock)
+  )
+  let nodeEffectiveStake = nodeStake < minCollateral ? 0n :
+                           nodeStake < maxCollateral ? nodeStake : maxCollateral
+  const registrationTime = await cachedCall(
+    rocketNodeManager, 'getNodeRegistrationTime', [nodeAddress], targetElBlock)
+  const nodeAge = BigInt(targetElBlockTimestamp) - registrationTime
+  if (nodeAge < intervalTime)
+    nodeEffectiveStake = nodeEffectiveStake * nodeAge / intervalTime
+  console.log(`${nodeAddress} effective stake: ${nodeEffectiveStake}`)
+  nodeEffectiveStakes.set(nodeAddress, nodeEffectiveStake)
+  totalEffectiveRplStake += nodeEffectiveStake
+}
+
+const nodeIndicesToProcess = nodeIndices.slice()
+while (nodeIndicesToProcess.length) {
+  console.log(`${nodeIndicesToProcess.length} nodes left to process`)
+  await Promise.all(
+    nodeIndicesToProcess.splice(0, MAX_CONCURRENT_NODES)
+    .map(i => processNode(i))
+  )
+}
+console.log(`totalEffectiveRplStake: ${totalEffectiveRplStake}`)
+
+const nodeCollateralAmounts = new Map()
+let totalCalculatedCollateralRewards = 0n
+for (const nodeAddress of nodeAddresses) {
+  const nodeEffectiveStake = nodeEffectiveStakes.get(nodeAddress)
+  const nodeCollateralAmount = collateralRewards * nodeEffectiveStake / totalEffectiveRplStake
+  nodeCollateralAmounts.set(nodeAddress, nodeCollateralAmount)
+  totalCalculatedCollateralRewards += nodeCollateralAmount
+}
+
+const numberOfMinipools = cachedCall(rocketMinipoolManager, 'getMinipoolCount', [], targetElBlock)
+
+console.log(`totalCalculatedCollateralRewards: ${totalCalculatedCollateralRewards}`)
+if (collateralRewards - totalCalculatedCollateralRewards > numberOfMinipools) {
+  throw new Error('collateral calculation has excessive error')
+}
