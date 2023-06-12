@@ -290,7 +290,7 @@ async function processNode(i) {
   const nodeAge = targetElBlockTimestamp - registrationTime
   if (nodeAge < intervalTime)
     nodeEffectiveStake = nodeEffectiveStake * nodeAge / intervalTime
-  log(2, `${nodeAddress} effective stake: ${nodeEffectiveStake}`)
+  log(3, `${nodeAddress} effective stake: ${nodeEffectiveStake}`)
   nodeEffectiveStakes.set(nodeAddress, nodeEffectiveStake)
   totalEffectiveRplStake += nodeEffectiveStake
 }
@@ -366,3 +366,7 @@ log(1, `totalCalculatedODaoRewards: ${totalCalculatedODaoRewards}`)
 
 if (oDaoRewards - totalCalculatedODaoRewards > numberOfMinipools)
   throw new Error('oDAO calculation has excessive error')
+
+const actualPDaoRewards = pendingRewards - totalCalculatedCollateralRewards - totalCalculatedODaoRewards
+log(1, `actualPDaoRewards: ${actualPDaoRewards}`)
+log(2, `pDAO rewards delta: ${actualPDaoRewards - pDaoRewards}`)
