@@ -103,14 +103,20 @@ const genesisTime = genesisTimes.get(networkName)
 const secondsPerSlot = 12n
 const slotsPerEpoch = 32n
 
-const fudgeFactor = 32n // TODO: figure out why this was wrong in interval 10
-const endTime = startTime + (intervalTime * intervalsPassed) + fudgeFactor
+const endTime = startTime + (intervalTime * intervalsPassed)
 console.log(`endTime: ${endTime}`)
 
 const totalTimespan = endTime - genesisTime
+console.log(`totalTimespan: ${totalTimespan}`)
 
 let targetBcSlot = totalTimespan / secondsPerSlot
 if (totalTimespan % secondsPerSlot) targetBcSlot++
+
+const targetSlotEpoch = targetBcSlot / slotsPerEpoch
+console.log(`targetSlotEpoch: ${targetSlotEpoch}`)
+targetBcSlot = (targetSlotEpoch + 1n) * slotsPerEpoch - 1n
+console.log(`last (possibly missing) slot in epoch: ${targetBcSlot}`)
+
 async function checkSlotExists(slotNumber) {
   const path = `/eth/v1/beacon/headers/${slotNumber}`
   const cache = await cachedBeacon(path); if (cache !== undefined) return cache
@@ -123,9 +129,7 @@ async function checkSlotExists(slotNumber) {
 }
 while (!(await checkSlotExists(targetBcSlot))) targetBcSlot--
 
-const targetSlotEpoch = targetBcSlot / slotsPerEpoch
 console.log(`targetBcSlot: ${targetBcSlot}`)
-console.log(`targetSlotEpoch: ${targetSlotEpoch}`)
 
 async function getBlockNumberFromSlot(slotNumber) {
   const path = `/eth/v1/beacon/blocks/${slotNumber}`
