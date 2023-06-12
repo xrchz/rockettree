@@ -319,4 +319,50 @@ const numberOfMinipools = cachedCall(rocketMinipoolManager, 'getMinipoolCount', 
 log(1, `totalCalculatedCollateralRewards: ${totalCalculatedCollateralRewards}`)
 if (collateralRewards - totalCalculatedCollateralRewards > numberOfMinipools)
   throw new Error('collateral calculation has excessive error')
+
+const rocketDAONodeTrusted = new ethers.Contract(
+  await getRocketAddress('rocketDAONodeTrusted', targetElBlock),
+  ['function getMemberCount() view returns (uint256)',
+   'function getMemberAt(uint256) view returns (address)',
+   'function getMemberJoinedTime(address) view returns (uint256)'
+  ],
+  provider
+)
+const oDaoCount = await cachedCall(rocketDAONodeTrusted, 'getMemberCount', [], targetElBlock)
+const oDaoIndices = Array.from(Array(parseInt(oDaoCount)).keys())
+const oDaoAddresses = await Promise.all(
+  oDaoIndices.map(i => cachedCall(rocketDAONodeTrusted, 'getMemberAt', [i], targetElBlock))
+)
+log(3, `oDaoAddresses: ${oDaoAddresses.slice(0, 5)}...`)
+
+let totalParticipatedSeconds = 0n
+const oDaoParticipatedSeconds = new Map()
+const oDaoIndicesToProcess = oDaoIndices.slice()
+while (oDaoIndicesToProcess.length) {
+  log(3, `${oDaoIndicesToProcess.length} oDAO nodes left to process`)
+  await Promise.all(oDaoIndicesToProcess.splice(0, MAX_CONCURRENT_NODES)
+    .map(async i => {
+      const nodeAddress = oDaoAddresses[i]
+      const joinTime = await cachedCall(
+        rocketDAONodeTrusted, 'getMemberJoinedTime', [nodeAddress], targetElBlock)
+      const odaoTime = targetElBlockTimestamp - joinTime
+      const participatedSeconds = odaoTime < intervalTime ? odaoTime : intervalTime
+      oDaoParticipatedSeconds.set(nodeAddress, participatedSeconds)
+      totalParticipatedSeconds += participatedSeconds
+    })
+  )
 }
+log(2, `totalParticipatedSeconds: ${totalParticipatedSeconds}`)
+
+let totalCalculatedODaoRewards = 0n
+const oDaoAmounts = new Map()
+for (const nodeAddress of oDaoAddresses) {
+  const participatedSeconds = oDaoParticipatedSeconds.get(nodeAddress)
+  const oDaoAmount = oDaoRewards * participatedSeconds / totalParticipatedSeconds
+  oDaoAmounts.set(nodeAddress, oDaoAmount)
+  totalCalculatedODaoRewards += oDaoAmount
+}
+log(1, `totalCalculatedODaoRewards: ${totalCalculatedODaoRewards}`)
+
+if (oDaoRewards - totalCalculatedODaoRewards > numberOfMinipools)
+  throw new Error('oDAO calculation has excessive error')
