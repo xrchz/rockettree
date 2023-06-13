@@ -134,14 +134,16 @@ while (!(await checkSlotExists(targetBcSlot))) targetBcSlot--
 log(1, `targetBcSlot: ${targetBcSlot}`)
 
 async function getBlockNumberFromSlot(slotNumber) {
-  const path = `/eth/v1/beacon/blocks/${slotNumber}`
+  const path = `/eth/v1/beacon/blinded_blocks/${slotNumber}`
   const cache = await cachedBeacon(path); if (cache !== undefined) return cache
   const url = new URL(path, beaconRpcUrl)
   const response = await fetch(url)
-  if (response.status !== 200)
+  if (response.status !== 200) {
     console.warn(`Unexpected response status getting ${slotNumber} block: ${response.status}`)
+    console.warn(`response text: ${await response.text()}`)
+  }
   const json = await response.json()
-  const result = BigInt(json.data.message.body.execution_payload.block_number)
+  const result = BigInt(json.data.message.body.execution_payload_header.block_number)
   await cachedBeacon(path, result); return result
 }
 
