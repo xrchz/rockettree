@@ -84,7 +84,13 @@ const rocketRewardsPool = new ethers.Contract(
   ['function getClaimIntervalTimeStart() view returns (uint256)',
    'function getClaimIntervalTime() view returns (uint256)',
    'function getPendingRPLRewards() view returns (uint256)',
-   'function getClaimingContractPerc(string) view returns (uint256)'
+   'function getClaimingContractPerc(string) view returns (uint256)',
+   'function getRewardIndex() view returns (uint256)',
+   // struct RewardSubmission {uint256 rewardIndex; uint256 executionBlock; uint256 consensusBlock; bytes32 merkleRoot; string merkleTreeCID; uint256 intervalsPassed; uint256 treasuryRPL; uint256[] trustedNodeRPL; uint256[] nodeRPL; uint256[] nodeETH; uint256 userETH;}
+   'event RewardSnapshot(uint256 indexed rewardIndex, '+
+    '(uint256, uint256, uint256, bytes32, string,' +
+    ' uint256, uint256, uint256[], uint256[], uint256[], uint256) submission, ' +
+    'uint256 intervalStartTime, uint256 intervalEndTime, uint256 time)'
   ],
   provider)
 
@@ -163,6 +169,9 @@ log(1, `targetElBlock: ${targetElBlock}`)
 const targetElBlockTimestamp = await provider.getBlock(targetElBlock).then(b => BigInt(b.timestamp))
 log(2, `targetElBlockTimestamp: ${targetElBlockTimestamp}`)
 
+const currentIndex = await cachedCall(rocketRewardsPool, 'getRewardIndex', [], targetElBlock)
+log(2, `currentIndex: ${currentIndex}`)
+
 const pendingRewards = await cachedCall(
   rocketRewardsPool, 'getPendingRPLRewards', [], targetElBlock)
 const collateralPercent = await cachedCall(
@@ -185,7 +194,9 @@ const rocketNodeManager = new ethers.Contract(
   await getRocketAddress('rocketNodeManager', targetElBlock),
   ['function getNodeCount() view returns (uint256)',
    'function getNodeAt(uint256) view returns (address)',
-   'function getNodeRegistrationTime(address) view returns (uint256)'
+   'function getNodeRegistrationTime(address) view returns (uint256)',
+   'function getSmoothingPoolRegistrationState(address) view returns (bool)',
+   'function getSmoothingPoolRegistrationChanged(address) view returns (uint256)'
   ],
   provider)
 
@@ -206,6 +217,7 @@ const rocketMinipoolManager = new ethers.Contract(
 const getMinipool = (addr) =>
   new ethers.Contract(addr,
     ['function getStatus() view returns (uint8)',
+     'function getStatusTime() view returns (uint256)',
      'function getUserDepositBalance() view returns (uint256)',
      'function getNodeDepositBalance() view returns (uint256)'
     ],
@@ -246,7 +258,7 @@ const nodeEffectiveStakes = new Map()
 const MAX_CONCURRENT_MINIPOOLS = parseInt(process.env.MAX_CONCURRENT_MINIPOOLS) || 10
 const MAX_CONCURRENT_NODES = parseInt(process.env.MAX_CONCURRENT_NODES) || 10
 
-async function processNode(i) {
+async function processNodeRPL(i) {
   const nodeAddress = nodeAddresses[i]
   const minipoolCount = await cachedCall(
     rocketMinipoolManager, 'getNodeMinipoolCount', [nodeAddress], targetElBlock)
@@ -297,12 +309,14 @@ async function processNode(i) {
   totalEffectiveRplStake += nodeEffectiveStake
 }
 
-const nodeIndicesToProcess = nodeIndices.slice()
-while (nodeIndicesToProcess.length) {
-  log(3, `${nodeIndicesToProcess.length} nodes left to process`)
+if (!process.env.SKIP_RPL) {
+
+const nodeIndicesToProcessRPL = nodeIndices.slice()
+while (nodeIndicesToProcessRPL.length) {
+  log(3, `${nodeIndicesToProcessRPL.length} nodes left to process RPL`)
   await Promise.all(
-    nodeIndicesToProcess.splice(0, MAX_CONCURRENT_NODES)
-    .map(i => processNode(i))
+    nodeIndicesToProcessRPL.splice(0, MAX_CONCURRENT_NODES)
+    .map(i => processNodeRPL(i))
   )
 }
 log(1, `totalEffectiveRplStake: ${totalEffectiveRplStake}`)
@@ -371,4 +385,89 @@ if (oDaoRewards - totalCalculatedODaoRewards > numberOfMinipools)
 
 const actualPDaoRewards = pendingRewards - totalCalculatedCollateralRewards - totalCalculatedODaoRewards
 log(1, `actualPDaoRewards: ${actualPDaoRewards}`)
-log(2, `pDAO rewards delta: ${actualPDaoRewards - pDaoRewards}`)
+log(3, `pDAO rewards delta: ${actualPDaoRewards - pDaoRewards}`)
+
+} // SKIP_RPL
+
+// TODO: skip smoothing pool if interval 0
+
+const rocketSmoothingPool = await getRocketAddress('rocketSmoothingPool', targetElBlock)
+const smoothingPoolBalance = await provider.getBalance(rocketSmoothingPool, targetElBlock)
+log(2, `smoothingPoolBalance: ${smoothingPoolBalance}`)
+
+const previousIntervalEventFilter = rocketRewardsPool.filters.RewardSnapshot(currentIndex - 1n)
+const foundEvents = await rocketRewardsPool.queryFilter(previousIntervalEventFilter, 0, targetElBlock)
+if (foundEvents.length !== 1)
+  throw new Error(`Did not find exactly 1 RewardSnapshot event for Interval ${currentIndex - 1n}`)
+const previousIntervalEvent = foundEvents.pop()
+const RewardSubmission = previousIntervalEvent.args[1]
+const ExecutionBlock = RewardSubmission[1]
+const ConsensusBlock = RewardSubmission[2]
+const bnStartEpoch = ConsensusBlock / slotsPerEpoch + 1n
+log(2, `bnStartEpoch: ${bnStartEpoch}`)
+let bnStartBlock = bnStartEpoch * slotsPerEpoch
+while (!(await checkSlotExists(bnStartBlock))) bnStartBlock++
+log(2, `bnStartBlock: ${bnStartBlock}`)
+const elStartBlock = await getBlockNumberFromSlot(bnStartBlock)
+log(2, `elStartBlock: ${elStartBlock}`)
+
+const rocketNetworkPenalties = new ethers.Contract(
+  await getRocketAddress('rocketNetworkPenalties', targetElBlock),
+  ['function getPenaltyCount(address) view returns (uint256)'],
+  provider)
+
+const farPastTime = 0n
+const farFutureTime = BigInt(1e18)
+
+let totalMinpoolScore = 0n
+let successfulAttestations = 0n
+const minipoolScores = new Map()
+
+async function processNodeSmoothing(i) {
+  const nodeAddress = nodeAddresses[i]
+  const minipoolCount = await cachedCall(
+    rocketMinipoolManager, 'getNodeMinipoolCount', [nodeAddress], targetElBlock)
+  async function minipoolEligibility(i) {
+    const minipoolAddress = await cachedCall(
+      rocketMinipoolManager, 'getNodeMinipoolAt', [nodeAddress, i], targetElBlock)
+    const minipool = getMinipool(minipoolAddress)
+    const minipoolStatus = await cachedCall(minipool, 'getStatus', [], targetElBlock)
+    const penaltyCount = await cachedCall(
+      rocketNetworkPenalties, 'getPenaltyCount', [minipoolAddress], targetElBlock)
+    if (minipoolStatus == stakingStatus) {
+      if (penaltyCount >= 3)
+        return 'cheater'
+      else
+        return 'staking'
+    }
+  }
+  let staking = false
+  for (const i of Array(parseInt(minipoolCount)).keys()) {
+    const result = await minipoolEligibility(i)
+    if (result === 'cheater') {
+      log(3, `${nodeAddress} is a cheater`)
+      return
+    }
+    else if (result === 'staking')
+      staking = true
+  }
+  if (!staking) {
+    log(4, `${nodeAddress} has no staking minipools: skipping`)
+    return
+  }
+  const isOptedIn = await cachedCall(
+    rocketNodeManager, 'getSmoothingPoolRegistrationState', [nodeAddress], targetElBlock)
+  const statusChangeTime = await cachedCall(
+    rocketNodeManager, 'getSmoothingPoolRegistrationChanged', [nodeAddress], targetElBlock)
+  const optInTime = isOptedIn ? statusChangeTime : farPastTime
+  const optOutTime = isOptedIn ? farFutureTime : statusChangeTime
+}
+
+const nodeIndicesToProcessSmoothing = nodeIndices.slice()
+while (nodeIndicesToProcessSmoothing.length) {
+  log(3, `${nodeIndicesToProcessSmoothing.length} nodes left to process smoothing`)
+  await Promise.all(
+    nodeIndicesToProcessSmoothing.splice(0, MAX_CONCURRENT_NODES)
+    .map(i => processNodeSmoothing(i))
+  )
+}
