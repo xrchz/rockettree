@@ -141,7 +141,8 @@ log(1, `targetBcSlot: ${targetBcSlot}`)
 
 async function getBlockNumberFromSlot(slotNumber) {
   const path = `/eth/v1/beacon/blinded_blocks/${slotNumber}`
-  const cache = await cachedBeacon(path); if (cache !== undefined) return cache
+  const key = `${path}/blockNumber`
+  const cache = await cachedBeacon(key); if (cache !== undefined) return cache
   const url = new URL(path, beaconRpcUrl)
   const response = await fetch(url)
   if (response.status !== 200) {
@@ -150,7 +151,47 @@ async function getBlockNumberFromSlot(slotNumber) {
   }
   const json = await response.json()
   const result = BigInt(json.data.message.body.execution_payload_header.block_number)
-  await cachedBeacon(path, result); return result
+  await cachedBeacon(key, result); return result
+}
+
+function hexStringToBitlist(s) {
+  const bitlist = []
+  let hexDigits = s.substring(2)
+  if (hexDigits.length % 2 !== 0)
+    hexDigits = `0${hexDigits}`
+  let i
+  while (hexDigits.length) {
+    const byteStr = hexDigits.substring(0, 2)
+    hexDigits = hexDigits.substring(2)
+    const uint8 = parseInt(`0x${byteStr}`)
+    i = 1
+    while (i < 256) {
+      bitlist.push(!!(uint8 & i))
+      i *= 2
+    }
+  }
+  i = bitlist.length
+  while (!bitlist[--i])
+    bitlist.pop()
+  bitlist.pop()
+  return bitlist
+}
+
+async function getAttestationsFromSlot(slotNumber) {
+  const path = `/eth/v1/beacon/blinded_blocks/${slotNumber}`
+  const key = `${path}/attestations`
+  const cache = await cachedBeacon(key); if (cache !== undefined) return cache
+  const url = new URL(path, beaconRpcUrl)
+  const response = await fetch(url)
+  if (response.status !== 200)
+    console.warn(`Unexpected response status getting ${slotNumber} attestations: ${response.status}`)
+  const json = await response.json()
+  const result = json.data.message.body.attestations.map(
+    ({aggregation_bits, data: {slot, index}}) =>
+    ({attested: hexStringToBitlist(aggregation_bits),
+      slotNumber: slot, committeeIndex: index})
+  )
+  await cachedBeacon(key, result); return result
 }
 
 async function getValidatorStatus(slotNumber, pubkey) {
@@ -219,7 +260,8 @@ const getMinipool = (addr) =>
     ['function getStatus() view returns (uint8)',
      'function getStatusTime() view returns (uint256)',
      'function getUserDepositBalance() view returns (uint256)',
-     'function getNodeDepositBalance() view returns (uint256)'
+     'function getNodeDepositBalance() view returns (uint256)',
+     'function getNodeFee() view returns (uint256)'
     ],
     provider)
 
@@ -422,6 +464,33 @@ const farFutureTime = BigInt(1e18)
 let totalMinpoolScore = 0n
 let successfulAttestations = 0n
 const minipoolScores = new Map()
+const goodAttestations = new Map()
+const missedAttestations = new Map()
+const possiblyEligibleMinipoolIndexInfo = new Map()
+const nodeSmoothingTimes = new Map()
+
+async function getIndexFromPubkey(pubkey) {
+  const path = `/eth/v1/beacon/states/head/validators/${pubkey}`
+  const key = `${path}/index`
+  const cache = await cachedBeacon(key); if (cache !== undefined) return cache
+  const url = new URL(path, beaconRpcUrl)
+  const response = await fetch(url)
+  if (response.status !== 200)
+    console.warn(`Unexpected response status getting ${pubkey} index: ${response.status}`)
+  const result = await response.json().then(j => j.data.index)
+  await cachedBeacon(key, result); return result
+}
+
+async function getCommittees(epochIndex) {
+  const path = `/eth/v1/beacon/states/head/committees?epoch=${epochIndex}`
+  const cache = await cachedBeacon(path); if (cache !== undefined) return cache
+  const url = new URL(path, beaconRpcUrl)
+  const response = await fetch(url)
+  if (response.status !== 200)
+    console.warn(`Unexpected response status getting epoch ${epochIndex}: ${response.status}`)
+  const result = await response.json().then(j => j.data)
+  await cachedBeacon(path, result); return result
+}
 
 async function processNodeSmoothing(i) {
   const nodeAddress = nodeAddresses[i]
@@ -437,8 +506,13 @@ async function processNodeSmoothing(i) {
     if (minipoolStatus == stakingStatus) {
       if (penaltyCount >= 3)
         return 'cheater'
-      else
+      else {
+        const pubkey = await cachedCall(
+          rocketMinipoolManager, 'getMinipoolPubkey', [minipoolAddress], targetElBlock)
+        const index = await getIndexFromPubkey(pubkey)
+        possiblyEligibleMinipoolIndexInfo.set(index, {nodeAddress, minipool})
         return 'staking'
+      }
     }
   }
   let staking = false
@@ -461,6 +535,7 @@ async function processNodeSmoothing(i) {
     rocketNodeManager, 'getSmoothingPoolRegistrationChanged', [nodeAddress], targetElBlock)
   const optInTime = isOptedIn ? statusChangeTime : farPastTime
   const optOutTime = isOptedIn ? farFutureTime : statusChangeTime
+  nodeSmoothingTimes.set(nodeAddress, {optInTime, optOutTime})
 }
 
 const nodeIndicesToProcessSmoothing = nodeIndices.slice()
@@ -469,5 +544,94 @@ while (nodeIndicesToProcessSmoothing.length) {
   await Promise.all(
     nodeIndicesToProcessSmoothing.splice(0, MAX_CONCURRENT_NODES)
     .map(i => processNodeSmoothing(i))
+  )
+}
+
+const rocketMinipoolBondReducer = new ethers.Contract(
+  await getRocketAddress('rocketMinipoolBondReducer', targetElBlock),
+  ['function getLastBondReductionPrevValue(address) view returns (uint256)',
+   'function getLastBondReductionPrevNodeFee(address) view returns (uint256)',
+   'function getLastBondReductionTime(address) view returns (uint256)'],
+  provider)
+
+async function processEpoch(epochIndex) {
+  const committees = await getCommittees(epochIndex)
+  log(3, `Got ${committees.length} committees for epoch ${epochIndex}`)
+  for (const committee of committees) {
+    const slotIndex = committee.slot
+    log(3, `Processing committee ${committee.index} for slot ${slotIndex}`)
+    for (const [position, validatorIndex] of committee.validators.entries()) {
+      log(4, `Processing position ${position} with validator ${validatorIndex}`)
+      if (!possiblyEligibleMinipoolIndexInfo.has(validatorIndex)) continue
+      const blockTime = genesisTime + secondsPerSlot * BigInt(slotIndex)
+      const {nodeAddress, minipool} = possiblyEligibleMinipoolIndexInfo.get(validatorIndex)
+      const {optInTime, optOutTime} = nodeSmoothingTimes.get(nodeAddress)
+      if (blockTime < optInTime || blockTime > optOutTime) continue
+      const statusTime = await cachedCall(minipool, 'getStatusTime', [], targetElBlock)
+      if (blockTime < statusTime) continue
+      const minipoolAddress = await minipool.getAddress()
+      log(4, `Minipool ${minipoolAddress}`)
+      // should be read at slotIndex, but since these never change,
+      // we can use targetElBlock which is later (and hit the cache more often)
+      const currentBond = await cachedCall(minipool, 'getNodeDepositBalance', [], targetElBlock)
+      const currentFee = await cachedCall(minipool, 'getNodeFee', [], targetElBlock)
+      const previousBond = await cachedCall(
+        rocketMinipoolBondReducer, 'getLastBondReductionPrevValue', [minipoolAddress], targetElBlock)
+      const previousFee = await cachedCall(
+        rocketMinipoolBondReducer, 'getLastBondReductionPrevNodeFee', [minipoolAddress], targetElBlock)
+      const lastReduceTime = await cachedCall(
+        rocketMinipoolBondReducer, 'getLastBondReductionTime', [minipoolAddress], targetElBlock)
+      const {bond, fee} = lastReduceTime > 0 && lastReduceTime > blockTime ?
+                          {bond: previousBond, fee: previousFee} :
+                          {bond: currentBond, fee: currentFee}
+      const minipoolScore = (BigInt(1e18) - fee) * bond / BigInt(32e18) + fee
+      log(4, `${minipoolAddress} potential score ${minipoolScore}`)
+      let success = false
+      for (const slotToCheck of Array.from(Array(parseInt(slotsPerEpoch)).keys())
+                                .map(i => parseInt(slotIndex) + 1 + i)) {
+        log(4, `Checking slot ${slotToCheck}`)
+        if (!(await checkSlotExists(slotToCheck))) continue
+        log(5, `slot ${slotToCheck} exists`)
+        const attestations = await getAttestationsFromSlot(slotToCheck)
+        log(5, `slot ${slotToCheck} has ${attestations.length} attestations`)
+        for (const {attested, slotNumber, committeeIndex} of attestations) {
+          if (slotNumber == slotIndex && committeeIndex == committee.index &&
+              attested[position]) {
+            if (!goodAttestations.has(minipoolAddress))
+              goodAttestations.set(minipoolAddress, [])
+            goodAttestations.get(minipoolAddress).push(
+              {slotIndex, position, committeeIndex, slotAttested: slotToCheck})
+            const oldScore = minipoolScores.has(minipoolAddress) ?
+                             minipoolScores.get(minipoolAddress) : 0n
+            minipoolScores.set(minipoolAddress, oldScore + minipoolScore)
+            totalMinpoolScore += minipoolScore
+            successfulAttestations++
+            success = true
+            break
+          }
+        }
+        if (success) break
+      }
+      if (!success) {
+        if (!missedAttestations.has(minipoolAddress))
+          missedAttestations.set(minipoolAddress, [])
+        missedAttestations.get(minipoolAddress).push(
+          {slotIndex, position, committeeIndex: committee.index})
+      }
+    }
+  }
+}
+
+const MAX_CONCURRENT_EPOCHS = parseInt(process.env.MAX_CONCURRENT_EPOCHS) || 5
+
+const intervalEpochsToProcess = Array.from(
+  Array(parseInt(targetSlotEpoch - bnStartEpoch + 1n)).keys())
+.map(i => bnStartEpoch + BigInt(i))
+
+while (intervalEpochsToProcess.length) {
+  log(3, `${intervalEpochsToProcess.length} epochs left to process`)
+  await Promise.all(
+    intervalEpochsToProcess.splice(0, MAX_CONCURRENT_EPOCHS)
+    .map(i => processEpoch(i))
   )
 }
