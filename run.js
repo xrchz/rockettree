@@ -492,6 +492,38 @@ async function getCommittees(epochIndex) {
   await cachedBeacon(path, result); return result
 }
 
+function makeLock() {
+  const queue = []
+  let locked = false
+
+  return function execute(fn) {
+    return acquire().then(fn).then(
+      r => {
+        release()
+        return r
+      },
+      e => {
+        release()
+        throw e
+      })
+  }
+
+  function acquire() {
+    if (locked)
+      return new Promise(resolve => queue.push(resolve))
+    else {
+      locked = true
+      return Promise.resolve()
+    }
+  }
+
+  function release() {
+    const next = queue.shift()
+    if (next) next()
+    else locked = false
+  }
+}
+
 async function processNodeSmoothing(i) {
   const nodeAddress = nodeAddresses[i]
   const minipoolCount = await cachedCall(
@@ -510,7 +542,7 @@ async function processNodeSmoothing(i) {
         const pubkey = await cachedCall(
           rocketMinipoolManager, 'getMinipoolPubkey', [minipoolAddress], targetElBlock)
         const index = await getIndexFromPubkey(pubkey)
-        possiblyEligibleMinipoolIndexInfo.set(index, {nodeAddress, minipool})
+        possiblyEligibleMinipoolIndexInfo.set(index, {nodeAddress, minipool, minipoolLock: makeLock()})
         return 'staking'
       }
     }
@@ -554,58 +586,72 @@ const rocketMinipoolBondReducer = new ethers.Contract(
    'function getLastBondReductionTime(address) view returns (uint256)'],
   provider)
 
+const attestationLock = makeLock()
+const slotLocksLock = makeLock()
+const slotLocks = new Map()
+
 async function processEpoch(epochIndex) {
   const committees = await getCommittees(epochIndex)
-  log(3, `Got ${committees.length} committees for epoch ${epochIndex}`)
+  log(4, `Got ${committees.length} committees for epoch ${epochIndex}`)
   for (const committee of committees) {
     const slotIndex = committee.slot
-    log(3, `Processing committee ${committee.index} for slot ${slotIndex}`)
+    log(4, `Processing committee ${committee.index} for slot ${slotIndex}`)
     for (const [position, validatorIndex] of committee.validators.entries()) {
-      log(4, `Processing position ${position} with validator ${validatorIndex}`)
+      log(5, `Processing position ${position} with validator ${validatorIndex}`)
       if (!possiblyEligibleMinipoolIndexInfo.has(validatorIndex)) continue
       const blockTime = genesisTime + secondsPerSlot * BigInt(slotIndex)
-      const {nodeAddress, minipool} = possiblyEligibleMinipoolIndexInfo.get(validatorIndex)
+      const {nodeAddress, minipool, minipoolLock} = possiblyEligibleMinipoolIndexInfo.get(validatorIndex)
       const {optInTime, optOutTime} = nodeSmoothingTimes.get(nodeAddress)
       if (blockTime < optInTime || blockTime > optOutTime) continue
-      const statusTime = await cachedCall(minipool, 'getStatusTime', [], targetElBlock)
+      const statusTime = await minipoolLock(async () => {
+        await cachedCall(minipool, 'getStatusTime', [], targetElBlock)
+      })
       if (blockTime < statusTime) continue
       const minipoolAddress = await minipool.getAddress()
-      log(4, `Minipool ${minipoolAddress}`)
-      // should be read at slotIndex, but since these never change,
-      // we can use targetElBlock which is later (and hit the cache more often)
-      const currentBond = await cachedCall(minipool, 'getNodeDepositBalance', [], targetElBlock)
-      const currentFee = await cachedCall(minipool, 'getNodeFee', [], targetElBlock)
-      const previousBond = await cachedCall(
-        rocketMinipoolBondReducer, 'getLastBondReductionPrevValue', [minipoolAddress], targetElBlock)
-      const previousFee = await cachedCall(
-        rocketMinipoolBondReducer, 'getLastBondReductionPrevNodeFee', [minipoolAddress], targetElBlock)
-      const lastReduceTime = await cachedCall(
-        rocketMinipoolBondReducer, 'getLastBondReductionTime', [minipoolAddress], targetElBlock)
-      const {bond, fee} = lastReduceTime > 0 && lastReduceTime > blockTime ?
-                          {bond: previousBond, fee: previousFee} :
-                          {bond: currentBond, fee: currentFee}
+      log(5, `Minipool ${minipoolAddress}`)
+      const {bond, fee} = await minipoolLock(async () => {
+        // should be read at slotIndex, but since these never change,
+        // we can use targetElBlock which is later (and hit the cache more often)
+        const currentBond = await cachedCall(minipool, 'getNodeDepositBalance', [], targetElBlock)
+        const currentFee = await cachedCall(minipool, 'getNodeFee', [], targetElBlock)
+        const previousBond = await cachedCall(
+          rocketMinipoolBondReducer, 'getLastBondReductionPrevValue', [minipoolAddress], targetElBlock)
+        const previousFee = await cachedCall(
+          rocketMinipoolBondReducer, 'getLastBondReductionPrevNodeFee', [minipoolAddress], targetElBlock)
+        const lastReduceTime = await cachedCall(
+          rocketMinipoolBondReducer, 'getLastBondReductionTime', [minipoolAddress], targetElBlock)
+        return lastReduceTime > 0 && lastReduceTime > blockTime ?
+               {bond: previousBond, fee: previousFee} :
+               {bond: currentBond, fee: currentFee}
+      })
       const minipoolScore = (BigInt(1e18) - fee) * bond / BigInt(32e18) + fee
-      log(4, `${minipoolAddress} potential score ${minipoolScore}`)
+      log(5, `${minipoolAddress} potential score ${minipoolScore}`)
       let success = false
       for (const slotToCheck of Array.from(Array(parseInt(slotsPerEpoch)).keys())
                                 .map(i => parseInt(slotIndex) + 1 + i)) {
-        log(4, `Checking slot ${slotToCheck}`)
-        if (!(await checkSlotExists(slotToCheck))) continue
-        log(5, `slot ${slotToCheck} exists`)
-        const attestations = await getAttestationsFromSlot(slotToCheck)
-        log(5, `slot ${slotToCheck} has ${attestations.length} attestations`)
+        await slotLocksLock(() => {
+          if (!slotLocks.has(slotToCheck)) slotLocks.set(slotToCheck, makeLock())
+        })
+        const slotLock = slotLocks.get(slotToCheck)
+        log(5, `Checking slot ${slotToCheck}`)
+        if (!(await slotLock(() => checkSlotExists(slotToCheck)))) continue
+        log(6, `slot ${slotToCheck} exists`)
+        const attestations = await slotLock(() => getAttestationsFromSlot(slotToCheck))
+        log(6, `slot ${slotToCheck} has ${attestations.length} attestations`)
         for (const {attested, slotNumber, committeeIndex} of attestations) {
           if (slotNumber == slotIndex && committeeIndex == committee.index &&
               attested[position]) {
-            if (!goodAttestations.has(minipoolAddress))
-              goodAttestations.set(minipoolAddress, [])
-            goodAttestations.get(minipoolAddress).push(
-              {slotIndex, position, committeeIndex, slotAttested: slotToCheck})
-            const oldScore = minipoolScores.has(minipoolAddress) ?
-                             minipoolScores.get(minipoolAddress) : 0n
-            minipoolScores.set(minipoolAddress, oldScore + minipoolScore)
-            totalMinpoolScore += minipoolScore
-            successfulAttestations++
+            await attestationLock(() => {
+              if (!goodAttestations.has(minipoolAddress))
+                goodAttestations.set(minipoolAddress, [])
+              goodAttestations.get(minipoolAddress).push(
+                {slotIndex, position, committeeIndex, slotAttested: slotToCheck})
+              const oldScore = minipoolScores.has(minipoolAddress) ?
+                               minipoolScores.get(minipoolAddress) : 0n
+              minipoolScores.set(minipoolAddress, oldScore + minipoolScore)
+              totalMinpoolScore += minipoolScore
+              successfulAttestations++
+            })
             success = true
             break
           }
@@ -613,10 +659,12 @@ async function processEpoch(epochIndex) {
         if (success) break
       }
       if (!success) {
-        if (!missedAttestations.has(minipoolAddress))
-          missedAttestations.set(minipoolAddress, [])
-        missedAttestations.get(minipoolAddress).push(
-          {slotIndex, position, committeeIndex: committee.index})
+        await attestationLock(() => {
+          if (!missedAttestations.has(minipoolAddress))
+            missedAttestations.set(minipoolAddress, [])
+          missedAttestations.get(minipoolAddress).push(
+            {slotIndex, position, committeeIndex: committee.index})
+        })
       }
     }
   }
