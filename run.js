@@ -586,20 +586,19 @@ const rocketMinipoolBondReducer = new ethers.Contract(
    'function getLastBondReductionTime(address) view returns (uint256)'],
   provider)
 
-const attestationLock = makeLock()
-const slotLocksLock = makeLock()
-const slotLocks = new Map()
+const rocketPoolDuties = new Map()
+const dutiesLock = makeLock()
 
-async function processEpoch(epochIndex) {
+async function processEpochDuties(epochIndex) {
   const committees = await getCommittees(epochIndex)
   log(4, `Got ${committees.length} committees for epoch ${epochIndex}`)
   for (const committee of committees) {
     const slotIndex = committee.slot
+    const blockTime = genesisTime + secondsPerSlot * BigInt(slotIndex)
     log(4, `Processing committee ${committee.index} for slot ${slotIndex}`)
     for (const [position, validatorIndex] of committee.validators.entries()) {
       log(5, `Processing position ${position} with validator ${validatorIndex}`)
       if (!possiblyEligibleMinipoolIndexInfo.has(validatorIndex)) continue
-      const blockTime = genesisTime + secondsPerSlot * BigInt(slotIndex)
       const {nodeAddress, minipool, minipoolLock} = possiblyEligibleMinipoolIndexInfo.get(validatorIndex)
       const {optInTime, optOutTime} = nodeSmoothingTimes.get(nodeAddress)
       if (blockTime < optInTime || blockTime > optOutTime) continue
@@ -608,7 +607,6 @@ async function processEpoch(epochIndex) {
       })
       if (blockTime < statusTime) continue
       const minipoolAddress = await minipool.getAddress()
-      log(5, `Minipool ${minipoolAddress}`)
       const {bond, fee} = await minipoolLock(async () => {
         // should be read at slotIndex, but since these never change,
         // we can use targetElBlock which is later (and hit the cache more often)
@@ -626,60 +624,28 @@ async function processEpoch(epochIndex) {
       })
       const minipoolScore = (BigInt(1e18) - fee) * bond / BigInt(32e18) + fee
       log(5, `${minipoolAddress} potential score ${minipoolScore}`)
-      let success = false
-      for (const slotToCheck of Array.from(Array(parseInt(slotsPerEpoch)).keys())
-                                .map(i => parseInt(slotIndex) + 1 + i)) {
-        await slotLocksLock(() => {
-          if (!slotLocks.has(slotToCheck)) slotLocks.set(slotToCheck, makeLock())
-        })
-        const slotLock = slotLocks.get(slotToCheck)
-        log(5, `Checking slot ${slotToCheck}`)
-        if (!(await slotLock(() => checkSlotExists(slotToCheck)))) continue
-        log(6, `slot ${slotToCheck} exists`)
-        const attestations = await slotLock(() => getAttestationsFromSlot(slotToCheck))
-        log(6, `slot ${slotToCheck} has ${attestations.length} attestations`)
-        for (const {attested, slotNumber, committeeIndex} of attestations) {
-          if (slotNumber == slotIndex && committeeIndex == committee.index &&
-              attested[position]) {
-            await attestationLock(() => {
-              if (!goodAttestations.has(minipoolAddress))
-                goodAttestations.set(minipoolAddress, [])
-              goodAttestations.get(minipoolAddress).push(
-                {slotIndex, position, committeeIndex, slotAttested: slotToCheck})
-              const oldScore = minipoolScores.has(minipoolAddress) ?
-                               minipoolScores.get(minipoolAddress) : 0n
-              minipoolScores.set(minipoolAddress, oldScore + minipoolScore)
-              totalMinpoolScore += minipoolScore
-              successfulAttestations++
-            })
-            success = true
-            break
-          }
-        }
-        if (success) break
-      }
-      if (!success) {
-        await attestationLock(() => {
-          if (!missedAttestations.has(minipoolAddress))
-            missedAttestations.set(minipoolAddress, [])
-          missedAttestations.get(minipoolAddress).push(
-            {slotIndex, position, committeeIndex: committee.index})
-        })
-      }
+      const dutyKey = `${slotIndex},${committee.index}`
+      await dutiesLock(() => {
+        if (!rocketPoolDuties.has(dutyKey))
+          rocketPoolDuties.set(dutyKey, [])
+        rocketPoolDuties.get(dutyKey).push(
+          {minipoolAddress, validatorIndex, position, minipoolScore}
+        )
+      })
     }
   }
 }
 
 const MAX_CONCURRENT_EPOCHS = parseInt(process.env.MAX_CONCURRENT_EPOCHS) || 5
 
-const intervalEpochsToProcess = Array.from(
+const intervalEpochsToGetDuties = Array.from(
   Array(parseInt(targetSlotEpoch - bnStartEpoch + 1n)).keys())
 .map(i => bnStartEpoch + BigInt(i))
 
-while (intervalEpochsToProcess.length) {
-  log(3, `${intervalEpochsToProcess.length} epochs left to process`)
+while (intervalEpochsToGetDuties.length) {
+  log(3, `${intervalEpochsToGetDuties.length} epochs left to get duties`)
   await Promise.all(
-    intervalEpochsToProcess.splice(0, MAX_CONCURRENT_EPOCHS)
-    .map(i => processEpoch(i))
+    intervalEpochsToGetDuties.splice(0, MAX_CONCURRENT_EPOCHS)
+    .map(i => processEpochDuties(i))
   )
 }
