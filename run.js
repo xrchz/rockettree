@@ -431,7 +431,7 @@ log(3, `pDAO rewards delta: ${actualPDaoRewards - pDaoRewards}`)
 
 } // SKIP_RPL
 
-// TODO: skip smoothing pool if interval 0
+if (currentIndex == 0) process.exit()
 
 const rocketSmoothingPool = await getRocketAddress('rocketSmoothingPool', targetElBlock)
 const smoothingPoolBalance = await provider.getBalance(rocketSmoothingPool, targetElBlock)
