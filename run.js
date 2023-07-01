@@ -1,5 +1,7 @@
 import 'dotenv/config'
 import { ethers } from 'ethers'
+import { provider, genesisTime, bigIntToAddress, secondsPerSlot, slotsPerEpoch, networkName,
+         iIdx, dIdx, iWait, iWork, iWorking } from './lib.js'
 import PouchDB from 'pouchdb-node'
 
 const verbosity = parseInt(process.env.VERBOSITY) || 2
@@ -12,13 +14,7 @@ const rocketStorageAddresses = new Map()
 rocketStorageAddresses.set('mainnet', '0x1d8f8f00cfa6758d7bE78336684788Fb0ee0Fa46')
 rocketStorageAddresses.set('goerli', '0xd8Cd47263414aFEca62d6e2a3917d6600abDceB3')
 
-const genesisTimes = new Map()
-genesisTimes.set('mainnet', 1606824023n)
-genesisTimes.set('goerli', 1616508000n)
-
 const beaconRpcUrl = process.env.BN_URL || 'http://localhost:5052'
-const provider = new ethers.JsonRpcProvider(process.env.RPC_URL || 'http://localhost:8545')
-const networkName = await provider.getNetwork().then(n => n.name)
 const rocketStorage = new ethers.Contract(
   rocketStorageAddresses.get(networkName),
   ['function getAddress(bytes32) view returns (address)'], provider)
@@ -107,10 +103,6 @@ const timeSinceStart = latestBlockTime - startTime
 const intervalsPassed = timeSinceStart / intervalTime
 log(2, `intervalsPassed: ${intervalsPassed}`)
 
-const genesisTime = genesisTimes.get(networkName)
-const secondsPerSlot = 12n
-const slotsPerEpoch = 32n
-
 const endTime = startTime + (intervalTime * intervalsPassed)
 log(1, `endTime: ${endTime}`)
 
@@ -120,7 +112,9 @@ log(2, `totalTimespan: ${totalTimespan}`)
 let targetBcSlot = totalTimespan / secondsPerSlot
 if (totalTimespan % secondsPerSlot) targetBcSlot++
 
-const targetSlotEpoch = targetBcSlot / slotsPerEpoch
+function tryBigInt(s) { try { return BigInt(s) } catch { return false } }
+
+const targetSlotEpoch = tryBigInt(process.env.OVERRIDE_TARGET_EPOCH) || targetBcSlot / slotsPerEpoch
 log(1, `targetSlotEpoch: ${targetSlotEpoch}`)
 targetBcSlot = (targetSlotEpoch + 1n) * slotsPerEpoch - 1n
 log(2, `last (possibly missing) slot in epoch: ${targetBcSlot}`)
@@ -312,16 +306,16 @@ async function processNodeRPL(i) {
     const minipoolStatus = await cachedCall(minipool, 'getStatus', [], targetElBlock)
     if (minipoolStatus != stakingStatus) return
     const pubkey = await cachedCall(
-      rocketMinipoolManager, 'getMinipoolPubkey', [addr], targetElBlock)
+      rocketMinipoolManager, 'getMinipoolPubkey', [addr], 'finalized')
     const validatorStatus = await getValidatorStatus(targetBcSlot, pubkey)
     const activationEpoch = validatorStatus.activation_epoch
     const exitEpoch = validatorStatus.exit_epoch
     const eligible = activationEpoch != 'FAR_FUTURE_EPOCH' && BigInt(activationEpoch) < targetSlotEpoch &&
                      (exitEpoch == 'FAR_FUTURE_EPOCH' || targetSlotEpoch < BigInt(exitEpoch))
     if (eligible) {
-      const borrowedEth = await cachedCall(minipool, 'getUserDepositBalance', [], targetElBlock)
+      const borrowedEth = await cachedCall(minipool, 'getUserDepositBalance', [], 'finalized')
       eligibleBorrowedEth += BigInt(borrowedEth)
-      const bondedEth = await cachedCall(minipool, 'getNodeDepositBalance', [], targetElBlock)
+      const bondedEth = await cachedCall(minipool, 'getNodeDepositBalance', [], 'finalized')
       eligibleBondedEth += BigInt(bondedEth)
     }
   }
@@ -330,7 +324,7 @@ async function processNodeRPL(i) {
     log(4, `${minipoolIndicesToProcess.length} minipools left for ${nodeAddress}`)
     await Promise.all(
       minipoolIndicesToProcess.splice(0, MAX_CONCURRENT_MINIPOOLS)
-      .map(i => cachedCall(rocketMinipoolManager, 'getNodeMinipoolAt', [nodeAddress, i], targetElBlock)
+      .map(i => cachedCall(rocketMinipoolManager, 'getNodeMinipoolAt', [nodeAddress, i], 'finalized')
                 .then(addr => processMinipool(addr)))
     )
   }
@@ -342,7 +336,7 @@ async function processNodeRPL(i) {
   let nodeEffectiveStake = nodeStake < minCollateral ? 0n :
                            nodeStake < maxCollateral ? nodeStake : maxCollateral
   const registrationTime = await cachedCall(
-    rocketNodeManager, 'getNodeRegistrationTime', [nodeAddress], targetElBlock)
+    rocketNodeManager, 'getNodeRegistrationTime', [nodeAddress], 'finalized')
   const nodeAge = targetElBlockTimestamp - registrationTime
   if (nodeAge < intervalTime)
     nodeEffectiveStake = nodeEffectiveStake * nodeAge / intervalTime
@@ -350,6 +344,8 @@ async function processNodeRPL(i) {
   nodeEffectiveStakes.set(nodeAddress, nodeEffectiveStake)
   totalEffectiveRplStake += nodeEffectiveStake
 }
+
+const numberOfMinipools = cachedCall(rocketMinipoolManager, 'getMinipoolCount', [], targetElBlock)
 
 if (!process.env.SKIP_RPL) {
 
@@ -371,8 +367,6 @@ for (const nodeAddress of nodeAddresses) {
   nodeCollateralAmounts.set(nodeAddress, nodeCollateralAmount)
   totalCalculatedCollateralRewards += nodeCollateralAmount
 }
-
-const numberOfMinipools = cachedCall(rocketMinipoolManager, 'getMinipoolCount', [], targetElBlock)
 
 log(1, `totalCalculatedCollateralRewards: ${totalCalculatedCollateralRewards}`)
 if (collateralRewards - totalCalculatedCollateralRewards > numberOfMinipools)
@@ -402,7 +396,7 @@ while (oDaoIndicesToProcess.length) {
     .map(async i => {
       const nodeAddress = oDaoAddresses[i]
       const joinTime = await cachedCall(
-        rocketDAONodeTrusted, 'getMemberJoinedTime', [nodeAddress], targetElBlock)
+        rocketDAONodeTrusted, 'getMemberJoinedTime', [nodeAddress], 'finalized')
       const odaoTime = targetElBlockTimestamp - joinTime
       const participatedSeconds = odaoTime < intervalTime ? odaoTime : intervalTime
       oDaoParticipatedSeconds.set(nodeAddress, participatedSeconds)
@@ -445,13 +439,17 @@ const previousIntervalEvent = foundEvents.pop()
 const RewardSubmission = previousIntervalEvent.args[1]
 const ExecutionBlock = RewardSubmission[1]
 const ConsensusBlock = RewardSubmission[2]
-const bnStartEpoch = ConsensusBlock / slotsPerEpoch + 1n
+
+const bnStartEpoch = tryBigInt(process.env.OVERRIDE_START_EPOCH) || ConsensusBlock / slotsPerEpoch + 1n
 log(2, `bnStartEpoch: ${bnStartEpoch}`)
+/*
+ * TODO: so far unused?
 let bnStartBlock = bnStartEpoch * slotsPerEpoch
 while (!(await checkSlotExists(bnStartBlock))) bnStartBlock++
 log(2, `bnStartBlock: ${bnStartBlock}`)
 const elStartBlock = await getBlockNumberFromSlot(bnStartBlock)
 log(2, `elStartBlock: ${elStartBlock}`)
+*/
 
 const rocketNetworkPenalties = new ethers.Contract(
   await getRocketAddress('rocketNetworkPenalties', targetElBlock),
@@ -466,8 +464,12 @@ let successfulAttestations = 0n
 const minipoolScores = new Map()
 const goodAttestations = new Map()
 const missedAttestations = new Map()
-const possiblyEligibleMinipoolIndexInfo = new Map()
-const nodeSmoothingTimes = new Map()
+let possiblyEligibleMinipoolIndices = 0
+const possiblyEligibleMinipoolIndexArray = new BigUint64Array(
+  new SharedArrayBuffer(
+    BigUint64Array.BYTES_PER_ELEMENT * 3 * numberOfMinipools
+  )
+)
 
 async function getIndexFromPubkey(pubkey) {
   const path = `/eth/v1/beacon/states/head/validators/${pubkey}`
@@ -491,6 +493,86 @@ async function getCommittees(epochIndex) {
   const result = await response.json().then(j => j.data)
   await cachedBeacon(path, result); return result
 }
+
+async function nodeSmoothingTimes(nodeAddress, blockTag, times) {
+  const key = `/${networkName}/${blockTag}/nodeSmoothingTimes/${nodeAddress}`
+  if (times) {
+    await db.put({_id: key,
+      optInTime: times.optInTime.toString(),
+      optOutTime: times.optOutTime.toString()})
+  }
+  else {
+    const doc = await db.get(key)
+    return {
+      optInTime: BigInt(doc.optInTime),
+      optOutTime: BigInt(doc.optOutTime)
+    }
+  }
+}
+
+async function processNodeSmoothing(i) {
+  const nodeAddress = nodeAddresses[i]
+  const minipoolCount = await cachedCall(
+    rocketMinipoolManager, 'getNodeMinipoolCount', [nodeAddress], targetElBlock)
+  async function minipoolEligibility(i) {
+    const minipoolAddress = await cachedCall(
+      rocketMinipoolManager, 'getNodeMinipoolAt', [nodeAddress, i], targetElBlock)
+    const minipool = getMinipool(minipoolAddress)
+    const minipoolStatus = await cachedCall(minipool, 'getStatus', [], targetElBlock)
+    const penaltyCount = await cachedCall(
+      rocketNetworkPenalties, 'getPenaltyCount', [minipoolAddress], targetElBlock)
+    if (minipoolStatus == stakingStatus) {
+      if (penaltyCount >= 3)
+        return 'cheater'
+      else {
+        const pubkey = await cachedCall(
+          rocketMinipoolManager, 'getMinipoolPubkey', [minipoolAddress], 'finalized')
+        const index = await getIndexFromPubkey(pubkey)
+        possiblyEligibleMinipoolIndexArray.set(
+          [index, BigInt(nodeAddress), BigInt(minipoolAddress)],
+          3 * possiblyEligibleMinipoolIndices++)
+        return 'staking'
+      }
+    }
+  }
+  let staking = false
+  for (const i of Array(parseInt(minipoolCount)).keys()) {
+    const result = await minipoolEligibility(i)
+    if (result === 'cheater') {
+      log(3, `${nodeAddress} is a cheater`)
+      return
+    }
+    else if (result === 'staking')
+      staking = true
+  }
+  if (!staking) {
+    log(4, `${nodeAddress} has no staking minipools: skipping`)
+    return
+  }
+  const isOptedIn = await cachedCall(
+    rocketNodeManager, 'getSmoothingPoolRegistrationState', [nodeAddress], targetElBlock)
+  const statusChangeTime = await cachedCall(
+    rocketNodeManager, 'getSmoothingPoolRegistrationChanged', [nodeAddress], targetElBlock)
+  const optInTime = isOptedIn ? statusChangeTime : farPastTime
+  const optOutTime = isOptedIn ? farFutureTime : statusChangeTime
+  await nodeSmoothingTimes(nodeAddress, targetElBlock, {optInTime, optOutTime})
+}
+
+const nodeIndicesToProcessSmoothing = nodeIndices.slice()
+while (nodeIndicesToProcessSmoothing.length) {
+  log(3, `${nodeIndicesToProcessSmoothing.length} nodes left to process smoothing`)
+  await Promise.all(
+    nodeIndicesToProcessSmoothing.splice(0, MAX_CONCURRENT_NODES)
+    .map(i => processNodeSmoothing(i))
+  )
+}
+
+const rocketMinipoolBondReducer = new ethers.Contract(
+  await getRocketAddress('rocketMinipoolBondReducer', targetElBlock),
+  ['function getLastBondReductionPrevValue(address) view returns (uint256)',
+   'function getLastBondReductionPrevNodeFee(address) view returns (uint256)',
+   'function getLastBondReductionTime(address) view returns (uint256)'],
+  provider)
 
 function makeLock() {
   const queue = []
@@ -524,115 +606,97 @@ function makeLock() {
   }
 }
 
-async function processNodeSmoothing(i) {
-  const nodeAddress = nodeAddresses[i]
-  const minipoolCount = await cachedCall(
-    rocketMinipoolManager, 'getNodeMinipoolCount', [nodeAddress], targetElBlock)
-  async function minipoolEligibility(i) {
-    const minipoolAddress = await cachedCall(
-      rocketMinipoolManager, 'getNodeMinipoolAt', [nodeAddress, i], targetElBlock)
-    const minipool = getMinipool(minipoolAddress)
-    const minipoolStatus = await cachedCall(minipool, 'getStatus', [], targetElBlock)
-    const penaltyCount = await cachedCall(
-      rocketNetworkPenalties, 'getPenaltyCount', [minipoolAddress], targetElBlock)
-    if (minipoolStatus == stakingStatus) {
-      if (penaltyCount >= 3)
-        return 'cheater'
-      else {
-        const pubkey = await cachedCall(
-          rocketMinipoolManager, 'getMinipoolPubkey', [minipoolAddress], targetElBlock)
-        const index = await getIndexFromPubkey(pubkey)
-        possiblyEligibleMinipoolIndexInfo.set(index, {nodeAddress, minipool, minipoolLock: makeLock()})
-        return 'staking'
-      }
-    }
-  }
-  let staking = false
-  for (const i of Array(parseInt(minipoolCount)).keys()) {
-    const result = await minipoolEligibility(i)
-    if (result === 'cheater') {
-      log(3, `${nodeAddress} is a cheater`)
-      return
-    }
-    else if (result === 'staking')
-      staking = true
-  }
-  if (!staking) {
-    log(4, `${nodeAddress} has no staking minipools: skipping`)
-    return
-  }
-  const isOptedIn = await cachedCall(
-    rocketNodeManager, 'getSmoothingPoolRegistrationState', [nodeAddress], targetElBlock)
-  const statusChangeTime = await cachedCall(
-    rocketNodeManager, 'getSmoothingPoolRegistrationChanged', [nodeAddress], targetElBlock)
-  const optInTime = isOptedIn ? statusChangeTime : farPastTime
-  const optOutTime = isOptedIn ? farFutureTime : statusChangeTime
-  nodeSmoothingTimes.set(nodeAddress, {optInTime, optOutTime})
-}
-
-const nodeIndicesToProcessSmoothing = nodeIndices.slice()
-while (nodeIndicesToProcessSmoothing.length) {
-  log(3, `${nodeIndicesToProcessSmoothing.length} nodes left to process smoothing`)
-  await Promise.all(
-    nodeIndicesToProcessSmoothing.splice(0, MAX_CONCURRENT_NODES)
-    .map(i => processNodeSmoothing(i))
-  )
-}
-
-const rocketMinipoolBondReducer = new ethers.Contract(
-  await getRocketAddress('rocketMinipoolBondReducer', targetElBlock),
-  ['function getLastBondReductionPrevValue(address) view returns (uint256)',
-   'function getLastBondReductionPrevNodeFee(address) view returns (uint256)',
-   'function getLastBondReductionTime(address) view returns (uint256)'],
-  provider)
-
 const rocketPoolDuties = new Map()
 const dutiesLock = makeLock()
 
+import { Worker } from 'node:worker_threads'
+
+const NUM_WORKERS = parseInt(process.env.NUM_WORKERS) || 8
+const BATCH_SIZE = parseInt(process.env.BATCH_SIZE) || 2048
+const MAX_BATCH_BYTES = BigUint64Array.BYTES_PER_ELEMENT * BATCH_SIZE
+
+const makeWorkerData = () => ({
+    possiblyEligibleMinipoolIndices,
+    possiblyEligibleMinipoolIndexArray,
+    signal: new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2)),
+    committees: new BigUint64Array(new SharedArrayBuffer(MAX_BATCH_BYTES))
+})
+
+const workers = Array(NUM_WORKERS).fill().map(() => {
+  const workerData = makeWorkerData()
+  const worker = new Worker('./worker.js', {workerData})
+  return {worker, workerData}
+})
+
+function makeMessageHandler(worker) {
+  return async function handler (message) {
+    if (typeof message == 'string') {
+      worker.postMessage(await nodeSmoothingTimes(message, targetElBlock))
+    }
+    else if (message instanceof BigUint64Array) {
+      let i = 0
+      while (i < message.length) {
+        const slotIndex = message[i++]
+        const committeeIndex = message[i++]
+        const minipoolScore = message[i++]
+        const position = message[i++]
+        const validatorIndex = message[i++]
+        const minipoolAddress = bigIntToAddress(message[i++])
+        const dutyKey = `${slotIndex},${committeeIndex}`
+        await dutiesLock(() => {
+          if (!rocketPoolDuties.has(dutyKey))
+            rocketPoolDuties.set(dutyKey, [])
+          log(3, `Storing a rocket pool duty for ${dutyKey}`)
+          rocketPoolDuties.get(dutyKey).push(
+            {minipoolAddress, validatorIndex, position, minipoolScore}
+          )
+        })
+      }
+    }
+    else {
+      const {minipoolAddress, key} = message
+      const {contract, args} = key.startsWith('getLastBondReduction') ?
+        {contract: rocketMinipoolBondReducer, args: [minipoolAddress]} :
+        {contract: getMinipool(minipoolAddress), args: []}
+      worker.postMessage(await cachedCall(contract, key, args, 'finalized'))
+    }
+  }
+}
+
+workers.forEach(w => w.worker.on('message', makeMessageHandler(w.worker)))
+
+async function getIdleWorker() {
+  return await Promise.any(workers.map(async w => {
+    const result = Atomics.waitAsync(w.workerData.signal, iIdx, iWorking)
+    if (result.async) await result.value
+    return w
+  }))
+}
+
 async function processEpochDuties(epochIndex) {
   const committees = await getCommittees(epochIndex)
-  log(4, `Got ${committees.length} committees for epoch ${epochIndex}`)
-  for (const committee of committees) {
-    const slotIndex = committee.slot
-    const blockTime = genesisTime + secondsPerSlot * BigInt(slotIndex)
-    log(4, `Processing committee ${committee.index} for slot ${slotIndex}`)
-    for (const [position, validatorIndex] of committee.validators.entries()) {
-      log(5, `Processing position ${position} with validator ${validatorIndex}`)
-      if (!possiblyEligibleMinipoolIndexInfo.has(validatorIndex)) continue
-      const {nodeAddress, minipool, minipoolLock} = possiblyEligibleMinipoolIndexInfo.get(validatorIndex)
-      const {optInTime, optOutTime} = nodeSmoothingTimes.get(nodeAddress)
-      if (blockTime < optInTime || blockTime > optOutTime) continue
-      const statusTime = await minipoolLock(async () => {
-        await cachedCall(minipool, 'getStatusTime', [], targetElBlock)
-      })
-      if (blockTime < statusTime) continue
-      const minipoolAddress = await minipool.getAddress()
-      const {bond, fee} = await minipoolLock(async () => {
-        // should be read at slotIndex, but since these never change,
-        // we can use targetElBlock which is later (and hit the cache more often)
-        const currentBond = await cachedCall(minipool, 'getNodeDepositBalance', [], targetElBlock)
-        const currentFee = await cachedCall(minipool, 'getNodeFee', [], targetElBlock)
-        const previousBond = await cachedCall(
-          rocketMinipoolBondReducer, 'getLastBondReductionPrevValue', [minipoolAddress], targetElBlock)
-        const previousFee = await cachedCall(
-          rocketMinipoolBondReducer, 'getLastBondReductionPrevNodeFee', [minipoolAddress], targetElBlock)
-        const lastReduceTime = await cachedCall(
-          rocketMinipoolBondReducer, 'getLastBondReductionTime', [minipoolAddress], targetElBlock)
-        return lastReduceTime > 0 && lastReduceTime > blockTime ?
-               {bond: previousBond, fee: previousFee} :
-               {bond: currentBond, fee: currentFee}
-      })
-      const minipoolScore = (BigInt(1e18) - fee) * bond / BigInt(32e18) + fee
-      log(5, `${minipoolAddress} potential score ${minipoolScore}`)
-      const dutyKey = `${slotIndex},${committee.index}`
-      await dutiesLock(() => {
-        if (!rocketPoolDuties.has(dutyKey))
-          rocketPoolDuties.set(dutyKey, [])
-        rocketPoolDuties.get(dutyKey).push(
-          {minipoolAddress, validatorIndex, position, minipoolScore}
-        )
-      })
+  let batchSize = BATCH_SIZE
+  let numCommittees, worker, workerData
+  for (const committee of commitees) {
+    const newSize = batchSize + 3 + committee.validators.length
+    if (newSize > BATCH_SIZE) {
+      if (numCommittees) {
+        Atomics.store(workerData.signal, iIdx, iWork)
+        Atomics.store(workerData.signal, dIdx, numCommittees)
+        Atomics.notify(workerData.signal, iIdx)
+        const result = Atomics.waitAsync(workerData.signal, iIdx, iWork)
+        if (result.async) await result.value
+      }
+      batchSize = 0
+      numCommittees = 0
+      ({worker, workerData} = await getIdleWorker())
     }
+    numCommittees++
+    workerData.committees[batchSize++] = BigInt(committee.slot)
+    workerData.committees[batchSize++] = BigInt(committee.index)
+    workerData.committees[batchSize++] = BigInt(committee.validators.length)
+    for (const validatorIndex of committee.validators)
+      workerData.committees[batchSize++] = BigInt(validatorIndex)
   }
 }
 
@@ -649,3 +713,12 @@ while (intervalEpochsToGetDuties.length) {
     .map(i => processEpochDuties(i))
   )
 }
+
+await Promise.all(workers.map(async w => {
+  const exited = new Promise(resolve => w.worker.on('exit', resolve))
+  const result = Atomics.waitAsync(w.workerData.signal, iIdx, iWorking)
+  if (result.async) await result.value
+  Atomics.store(w.workerData.signal, iIdx, iExit)
+  Atomics.notify(w.workerData.signal, iIdx)
+  return exited
+}))
