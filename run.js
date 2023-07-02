@@ -530,9 +530,12 @@ async function getCommittees(epochIndex) {
 async function nodeSmoothingTimes(nodeAddress, blockTag, times) {
   const key = `/${networkName}/${blockTag}/nodeSmoothingTimes/${nodeAddress}`
   if (times) {
-    await db.put({_id: key,
-      optInTime: times.optInTime.toString(),
-      optOutTime: times.optOutTime.toString()})
+    if (times === 'check')
+      return await db.allDocs({key}).then(result => result.rows.length)
+    else
+      await db.put({_id: key,
+        optInTime: times.optInTime.toString(),
+        optOutTime: times.optOutTime.toString()})
   }
   else {
     const doc = await db.get(key)
@@ -545,6 +548,8 @@ async function nodeSmoothingTimes(nodeAddress, blockTag, times) {
 
 async function processNodeSmoothing(i) {
   const nodeAddress = nodeAddresses[i]
+  if (await nodeSmoothingTimes(nodeAddress, targetElBlock, 'check'))
+    return
   const minipoolCount = await cachedCall(
     rocketMinipoolManager, 'getNodeMinipoolCount', [nodeAddress], targetElBlock)
   async function minipoolEligibility(i) {
