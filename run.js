@@ -680,7 +680,7 @@ async function processEpochDuties(epochIndex) {
   const committees = await getCommittees(epochIndex)
   let batchSize = BATCH_SIZE
   let numCommittees, worker, workerData
-  for (const committee of commitees) {
+  for (const committee of committees) {
     const newSize = batchSize + 3 + committee.validators.length
     if (newSize > BATCH_SIZE) {
       if (numCommittees) {
@@ -692,7 +692,7 @@ async function processEpochDuties(epochIndex) {
       }
       batchSize = 0
       numCommittees = 0
-      ({worker, workerData} = await getIdleWorker())
+      ;({worker, workerData} = await getIdleWorker())
     }
     numCommittees++
     workerData.committees[batchSize++] = BigInt(committee.slot)
