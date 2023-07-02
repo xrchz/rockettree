@@ -548,8 +548,6 @@ async function nodeSmoothingTimes(nodeAddress, blockTag, times) {
 
 async function processNodeSmoothing(i) {
   const nodeAddress = nodeAddresses[i]
-  if (await nodeSmoothingTimes(nodeAddress, targetElBlock, 'check'))
-    return
   const minipoolCount = await cachedCall(
     rocketMinipoolManager, 'getNodeMinipoolCount', [nodeAddress], targetElBlock)
   async function minipoolEligibility(i) {
@@ -585,6 +583,8 @@ async function processNodeSmoothing(i) {
     else if (result === 'staking')
       staking = true
   }
+  if (await nodeSmoothingTimes(nodeAddress, targetElBlock, 'check'))
+    return
   if (!staking) {
     log(4, `${nodeAddress} has no staking minipools: skipping`)
     return
