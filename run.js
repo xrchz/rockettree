@@ -345,7 +345,7 @@ async function processNodeRPL(i) {
   totalEffectiveRplStake += nodeEffectiveStake
 }
 
-const numberOfMinipools = cachedCall(rocketMinipoolManager, 'getMinipoolCount', [], targetElBlock)
+const numberOfMinipools = await cachedCall(rocketMinipoolManager, 'getMinipoolCount', [], targetElBlock)
 
 if (!process.env.SKIP_RPL) {
 
@@ -451,6 +451,38 @@ const elStartBlock = await getBlockNumberFromSlot(bnStartBlock)
 log(2, `elStartBlock: ${elStartBlock}`)
 */
 
+function makeLock() {
+  const queue = []
+  let locked = false
+
+  return function execute(fn) {
+    return acquire().then(fn).then(
+      r => {
+        release()
+        return r
+      },
+      e => {
+        release()
+        throw e
+      })
+  }
+
+  function acquire() {
+    if (locked)
+      return new Promise(resolve => queue.push(resolve))
+    else {
+      locked = true
+      return Promise.resolve()
+    }
+  }
+
+  function release() {
+    const next = queue.shift()
+    if (next) next()
+    else locked = false
+  }
+}
+
 const rocketNetworkPenalties = new ethers.Contract(
   await getRocketAddress('rocketNetworkPenalties', targetElBlock),
   ['function getPenaltyCount(address) view returns (uint256)'],
@@ -467,9 +499,10 @@ const missedAttestations = new Map()
 let possiblyEligibleMinipoolIndices = 0
 const possiblyEligibleMinipoolIndexArray = new BigUint64Array(
   new SharedArrayBuffer(
-    BigUint64Array.BYTES_PER_ELEMENT * 3 * numberOfMinipools
+    BigUint64Array.BYTES_PER_ELEMENT * 3 * parseInt(numberOfMinipools)
   )
 )
+const possiblyEligibleMinipoolIndexArrayLock = makeLock()
 
 async function getIndexFromPubkey(pubkey) {
   const path = `/eth/v1/beacon/states/head/validators/${pubkey}`
@@ -528,9 +561,11 @@ async function processNodeSmoothing(i) {
         const pubkey = await cachedCall(
           rocketMinipoolManager, 'getMinipoolPubkey', [minipoolAddress], 'finalized')
         const index = await getIndexFromPubkey(pubkey)
-        possiblyEligibleMinipoolIndexArray.set(
-          [index, BigInt(nodeAddress), BigInt(minipoolAddress)],
-          3 * possiblyEligibleMinipoolIndices++)
+        await possiblyEligibleMinipoolIndexArrayLock(() =>
+          possiblyEligibleMinipoolIndexArray.set(
+            [index, BigInt(nodeAddress), BigInt(minipoolAddress)],
+            3 * possiblyEligibleMinipoolIndices++)
+        )
         return 'staking'
       }
     }
@@ -573,38 +608,6 @@ const rocketMinipoolBondReducer = new ethers.Contract(
    'function getLastBondReductionPrevNodeFee(address) view returns (uint256)',
    'function getLastBondReductionTime(address) view returns (uint256)'],
   provider)
-
-function makeLock() {
-  const queue = []
-  let locked = false
-
-  return function execute(fn) {
-    return acquire().then(fn).then(
-      r => {
-        release()
-        return r
-      },
-      e => {
-        release()
-        throw e
-      })
-  }
-
-  function acquire() {
-    if (locked)
-      return new Promise(resolve => queue.push(resolve))
-    else {
-      locked = true
-      return Promise.resolve()
-    }
-  }
-
-  function release() {
-    const next = queue.shift()
-    if (next) next()
-    else locked = false
-  }
-}
 
 const rocketPoolDuties = new Map()
 const dutiesLock = makeLock()
