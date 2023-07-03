@@ -32,8 +32,9 @@ export const addressToUint64s = s => uint256To64s(BigInt(s))
 export const uint64sToAddress = a => `0x${uint64sTo256(a).toString(16).padStart(40, '0')}`
 
 export const iIdx = 0
-export const iWait = 0
-export const iWork = 1
-export const iWorking = 2
-export const iExit = 3
+export const iIdle = 0
+export const iLoading = 1
+export const iReady = 2
+export const iWorking = 3
+export const iExit = 4
 export const dIdx = 1

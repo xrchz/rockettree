@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import { ethers } from 'ethers'
 import { provider, genesisTime, addressToUint64s, uint64sTo256, secondsPerSlot, slotsPerEpoch, networkName,
-         iIdx, dIdx, iWait, iWork, iWorking } from './lib.js'
+         iIdx, dIdx, iIdle, iLoading, iReady, iWorking, iExit } from './lib.js'
 import PouchDB from 'pouchdb-node'
 
 const verbosity = parseInt(process.env.VERBOSITY) || 2
@@ -630,12 +630,6 @@ const makeWorkerData = () => ({
     committees: new BigUint64Array(new SharedArrayBuffer(MAX_BATCH_BYTES))
 })
 
-const workers = Array(NUM_WORKERS).fill().map(() => {
-  const workerData = makeWorkerData()
-  const worker = new Worker('./worker.js', {workerData})
-  return {worker, workerData}
-})
-
 function makeMessageHandler(worker) {
   return async function handler (message) {
     if (typeof message == 'string') {
@@ -675,14 +669,30 @@ function makeMessageHandler(worker) {
   }
 }
 
-workers.forEach(w => w.worker.on('message', makeMessageHandler(w.worker)))
+const workers = Array(NUM_WORKERS).fill().map(() => {
+  const workerData = makeWorkerData()
+  const worker = new Worker('./worker.js', {workerData})
+  worker.on('message', makeMessageHandler(worker))
+  return {worker, workerData}
+})
+
+async function idleToLoading(i) {
+  const {worker, workerData} = workers[i]
+  while (true) {
+    const prev = Atomics.compareExchange(workerData.signal, iIdx, iIdle, iLoading)
+    if (prev == iIdle) break
+    const result = Atomics.waitAsync(workerData.signal, iIdx, prev)
+    if (result.async) await result.value
+  }
+  return i
+}
+
+const idleWorkers = Array.from(Array(NUM_WORKERS).keys()).map(idleToLoading)
 
 async function getIdleWorker() {
-  return await Promise.any(workers.map(async w => {
-    const result = Atomics.waitAsync(w.workerData.signal, iIdx, iWorking)
-    if (result.async) await result.value
-    return w
-  }))
+  const i = await Promise.any(idleWorkers)
+  idleWorkers.splice(i, 1, idleToLoading(i))
+  return workers[i]
 }
 
 async function processEpochDuties(epochIndex) {
@@ -693,11 +703,13 @@ async function processEpochDuties(epochIndex) {
     const newSize = batchSize + 3 + committee.validators.length
     if (newSize > BATCH_SIZE) {
       if (numCommittees) {
-        Atomics.store(workerData.signal, iIdx, iWork)
         Atomics.store(workerData.signal, dIdx, numCommittees)
+        const prev = Atomics.compareExchange(workerData.signal, iIdx, iLoading, iReady)
+        if (prev != iLoading) {
+          console.error(`${worker.threadId} in wrong state ${prev}`)
+          process.exit(1)
+        }
         Atomics.notify(workerData.signal, iIdx)
-        const result = Atomics.waitAsync(workerData.signal, iIdx, iWork)
-        if (result.async) await result.value
       }
       batchSize = 0
       numCommittees = 0
@@ -728,9 +740,17 @@ while (intervalEpochsToGetDuties.length) {
 
 await Promise.all(workers.map(async w => {
   const exited = new Promise(resolve => w.worker.on('exit', resolve))
-  const result = Atomics.waitAsync(w.workerData.signal, iIdx, iWorking)
-  if (result.async) await result.value
-  Atomics.store(w.workerData.signal, iIdx, iExit)
-  Atomics.notify(w.workerData.signal, iIdx)
+  while (true) {
+    const prev = Atomics.compareExchange(w.workerData.signal, iIdx, iIdle, iExit)
+    if (prev == iIdle) {
+      Atomics.notify(w.workerData.signal, iIdx)
+      break
+    }
+    else {
+      console.warn(`Failed to idle->exit ${w.worker.threadId}, retrying`)
+      const result = Atomics.waitAsync(w.workerData.signal, iIdx)
+      if (result.async) await result.value
+    }
+  }
   return exited
 }))

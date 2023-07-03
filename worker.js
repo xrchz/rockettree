@@ -38,11 +38,12 @@ async function getNodeSmoothingTimes(nodeAddress) {
 }
 
 while (true) {
-  Atomics.wait(workerData.signal, iIdx, iWait)
-  if (Atomics.load(workerData.signal, iIdx) == iExit) process.exit()
-
-  Atomics.store(workerData.signal, iIdx, iWorking)
-  Atomics.notify(workerData.signal, iIdx)
+  let sig = Atomics.compareExchange(workerData.signal, iIdx, iReady, iWorking)
+  if (sig == iExit) process.exit()
+  if (sig != iReady) {
+    Atomics.wait(workerData.signal, iIdx, sig)
+    continue
+  }
 
   const numCommittees = Atomics.load(workerData.signal, dIdx)
   const eltsPerDuty = 6
@@ -56,9 +57,16 @@ while (true) {
   let numDuties = 0
   i = 0
   while (committeesLeft--) {
-    const [slotIndex, committeeIndex, numValidators] =
+    console.log(`${threadId} ${committeesLeft} committeesLeft`)
+    const [slotIndex, committeeIndex, BInumValidators] =
       workerData.committees.slice(i, i + 3)
+    const numValidators = parseInt(BInumValidators)
     i += 3
+    if (!(typeof genesisTime === typeof secondsPerSlot &&
+          typeof secondsPerSlot === typeof slotIndex)) {
+      console.error(`Failure with ${genesisTime} ${secondsPerSlot} ${slotIndex}`)
+      process.exit(1)
+    }
     const blockTime = genesisTime + secondsPerSlot * slotIndex
     const validators = workerData.committees.slice(i, i + numValidators)
     i += numValidators
@@ -93,6 +101,10 @@ while (true) {
     }
   }
   postDuties()
-  Atomics.store(workerData.signal, iIdx, iWait)
+  sig = Atomics.compareExchange(workerData.signal, iIdx, iWorking, iIdle)
+  if (sig != iWorking) {
+    console.error(`Got wrong signal ${sig} before idle in ${threadId}`)
+    process.exit(1)
+  }
   Atomics.notify(workerData.signal, iIdx)
 }
