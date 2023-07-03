@@ -29,7 +29,7 @@ export function uint64sTo256(a) {
   return n
 }
 export const addressToUint64s = s => uint256To64s(BigInt(s))
-export const uint64sToAddress = a => `0x${uint64sTo256(a).toString(16).padStart(40, '0')}`
+export const uint64sToAddress = a => ethers.getAddress(`0x${uint64sTo256(a).toString(16).padStart(40, '0')}`)
 
 export const iIdx = 0
 export const iIdle = 0
