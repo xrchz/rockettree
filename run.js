@@ -1,6 +1,7 @@
 import 'dotenv/config'
 import { ethers } from 'ethers'
-import { provider, genesisTime, addressToUint64s, uint64sTo256, secondsPerSlot, slotsPerEpoch, networkName,
+import { provider, genesisTime, secondsPerSlot, slotsPerEpoch, networkName,
+         addressToUint64s, uint64sTo256, uint64sToAddress,
          iIdx, dIdx, iIdle, iLoading, iReady, iWorking, iExit } from './lib.js'
 import PouchDB from 'pouchdb-node'
 
@@ -652,7 +653,7 @@ function makeMessageHandler(worker) {
         await dutiesLock(() => {
           if (!rocketPoolDuties.has(dutyKey))
             rocketPoolDuties.set(dutyKey, [])
-          log(3, `Storing a rocket pool duty for ${dutyKey}`)
+          log(3, `Storing duty ${dutyKey} ${validatorIndex}`)
           rocketPoolDuties.get(dutyKey).push(
             {minipoolAddress, validatorIndex, position, minipoolScore}
           )
@@ -688,10 +689,14 @@ async function idleToLoading(i) {
 }
 
 const idleWorkers = Array.from(Array(NUM_WORKERS).keys()).map(idleToLoading)
+const idleWorkersLock = makeLock()
 
 async function getIdleWorker() {
-  const i = await Promise.any(idleWorkers)
-  idleWorkers.splice(i, 1, idleToLoading(i))
+  const i = await idleWorkersLock(() =>
+    Promise.any(idleWorkers).then(i => {
+      idleWorkers.splice(i, 1, idleToLoading(i))
+      return i
+    }))
   return workers[i]
 }
 
