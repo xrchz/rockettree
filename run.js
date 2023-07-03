@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import { ethers } from 'ethers'
-import { provider, genesisTime, bigIntToAddress, secondsPerSlot, slotsPerEpoch, networkName,
+import { provider, genesisTime, addressToUint64s, uint64sTo256, secondsPerSlot, slotsPerEpoch, networkName,
          iIdx, dIdx, iWait, iWork, iWorking } from './lib.js'
 import PouchDB from 'pouchdb-node'
 
@@ -499,7 +499,7 @@ const missedAttestations = new Map()
 let possiblyEligibleMinipoolIndices = 0
 const possiblyEligibleMinipoolIndexArray = new BigUint64Array(
   new SharedArrayBuffer(
-    BigUint64Array.BYTES_PER_ELEMENT * 3 * parseInt(numberOfMinipools)
+    BigUint64Array.BYTES_PER_ELEMENT * (1 + 4 + 4) * parseInt(numberOfMinipools)
   )
 )
 const possiblyEligibleMinipoolIndexArrayLock = makeLock()
@@ -566,8 +566,8 @@ async function processNodeSmoothing(i) {
         const index = await getIndexFromPubkey(pubkey)
         await possiblyEligibleMinipoolIndexArrayLock(() =>
           possiblyEligibleMinipoolIndexArray.set(
-            [index, BigInt(nodeAddress), BigInt(minipoolAddress)],
-            3 * possiblyEligibleMinipoolIndices++)
+            [index, ...addressToUint64s(nodeAddress), ...addressToUint64s(minipoolAddress)],
+            (1 + 4 + 4) * possiblyEligibleMinipoolIndices++)
         )
         return 'staking'
       }
@@ -646,10 +646,14 @@ function makeMessageHandler(worker) {
       while (i < message.length) {
         const slotIndex = message[i++]
         const committeeIndex = message[i++]
-        const minipoolScore = message[i++]
+        const minipoolScore64s = []
+        for (const _ of Array(4)) minipoolScore64s.push(message[i++])
+        const minipoolScore = uint64sTo256(minipoolScore64s)
         const position = message[i++]
         const validatorIndex = message[i++]
-        const minipoolAddress = bigIntToAddress(message[i++])
+        const minipoolAddress64s = []
+        for (const _ of Array(4)) minipoolAddress64s.push(message[i++])
+        const minipoolAddress = uint64sToAddress(minipoolAddress64s)
         const dutyKey = `${slotIndex},${committeeIndex}`
         await dutiesLock(() => {
           if (!rocketPoolDuties.has(dutyKey))

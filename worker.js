@@ -1,16 +1,17 @@
 import { ethers } from 'ethers'
-import { bigIntToAddress, genesisTime, secondsPerSlot, iIdx, iWait, iWork, iWorking, iExit, dIdx } from './lib.js'
-
-import { parentPort, workerData } from 'node:worker_threads'
+import { uint64sToAddress, addressToUint64s, uint256To64s, genesisTime, secondsPerSlot,
+         iIdx, iIdle, iReady, iWorking, iExit, dIdx } from './lib.js'
+import { parentPort, workerData, threadId } from 'node:worker_threads'
 
 const possiblyEligibleMinipools = new Map()
 let i = 0
 while (i < workerData.possiblyEligibleMinipoolIndices) {
-  const [index, BInodeAddress, BIminipoolAddress] =
-    workerData.possiblyEligibleMinipoolIndexArray.slice(i, 3 + i++)
+  const [index, nodeAddress0, nodeAddress1, nodeAddress2, nodeAddress3,
+         minipoolAddress0, minipoolAddress1, minipoolAddress2, minipoolAddress3] =
+    workerData.possiblyEligibleMinipoolIndexArray.slice(i, 1 + 4 + 4 + i++)
   possiblyEligibleMinipools.set(index, {
-    nodeAddress: bigIntToAddress(BInodeAddress),
-    minipoolAddress: bigIntToAddress(BIminipoolAddress)
+    nodeAddress: uint64sToAddress([nodeAddress0, nodeAddress1, nodeAddress2, nodeAddress3]),
+    minipoolAddress: uint64sToAddress([minipoolAddress0, minipoolAddress1, minipoolAddress2, minipoolAddress3])
   })
 }
 
@@ -84,8 +85,10 @@ while (true) {
         numDuties = 0
       }
       dutiesToReturn.buffer.resize(newByteLength)
-      dutiesToReturn.set([slotIndex, committeeIndex, minipoolScore,
-                          BigInt(position), validatorIndex, BigInt(minipoolAddress)],
+      dutiesToReturn.set([slotIndex, committeeIndex,
+                          ...uint256To64s(minipoolScore),
+                          BigInt(position), validatorIndex,
+                          ...addressToUint64s(minipoolAddress)],
                          eltsPerDuty * numDuties++)
     }
   }
