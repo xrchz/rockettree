@@ -22,7 +22,7 @@ async function getMinipoolInfo(minipoolAddress, key) {
   const info = minipoolInfo.get(minipoolAddress)
   if (info.has(key)) return info.get(key)
   parentPort.postMessage({minipoolAddress, key})
-  const value = await new Promise((resolve) => parentPort.on('message', resolve))
+  const value = await new Promise((resolve) => parentPort.once('message', resolve))
   info.set(key, value)
   return value
 }
@@ -32,7 +32,7 @@ async function getNodeSmoothingTimes(nodeAddress) {
   if (nodeSmoothingTimes.has(nodeAddress))
     return nodeSmoothingTimes.get(nodeAddress)
   parentPort.postMessage(nodeAddress)
-  const value = await new Promise((resolve) => parentPort.on('message', resolve))
+  const value = await new Promise((resolve) => parentPort.once('message', resolve))
   nodeSmoothingTimes.set(nodeAddress, value)
   return value
 }
