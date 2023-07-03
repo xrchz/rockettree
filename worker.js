@@ -8,7 +8,7 @@ let i = 0
 while (i < workerData.possiblyEligibleMinipoolIndices) {
   const [index, nodeAddress0, nodeAddress1, nodeAddress2, nodeAddress3,
          minipoolAddress0, minipoolAddress1, minipoolAddress2, minipoolAddress3] =
-    workerData.possiblyEligibleMinipoolIndexArray.slice(i, 1 + 4 + 4 + i++)
+    workerData.possiblyEligibleMinipoolIndexArray.slice((1 + 4 + 4) * i, (1 + 4 + 4) * ++i)
   possiblyEligibleMinipools.set(index, {
     nodeAddress: uint64sToAddress([nodeAddress0, nodeAddress1, nodeAddress2, nodeAddress3]),
     minipoolAddress: uint64sToAddress([minipoolAddress0, minipoolAddress1, minipoolAddress2, minipoolAddress3])
@@ -46,7 +46,7 @@ while (true) {
   }
 
   const numCommittees = Atomics.load(workerData.signal, dIdx)
-  const eltsPerDuty = 6
+  const eltsPerDuty = 1 + 1 + 4 + 1 + 1 + 4
   const maxByteLength = eltsPerDuty * BigUint64Array.BYTES_PER_ELEMENT * numCommittees
   let dutiesToReturn = new BigUint64Array(new ArrayBuffer(0, {maxByteLength}))
   function postDuties() {
