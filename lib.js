@@ -1,8 +1,30 @@
+import 'dotenv/config'
 import { ethers } from 'ethers'
+import { createConnection } from 'node:net'
+
+export const socketPath = process.env.SOCKET || '/tmp/rockettree.ipc'
+
+export function cachedCall(contractName, fn, args, blockTag) {
+  const socket = createConnection({path: socketPath, allowHalfOpen: true, noDelay: true})
+  socket.setEncoding('utf8')
+  const data = []
+  socket.on('data', (d) => data.push(d))
+  return new Promise(resolve => {
+    socket.on('end', () => resolve(data.join('')))
+    socket.end(['contract', contractName, fn, args.join(), blockTag].join('/'))
+  })
+}
+
+const verbosity = parseInt(process.env.VERBOSITY) || 2
+export const log = (v, s) => verbosity >= v ? console.log(s) : undefined
 
 const genesisTimes = new Map()
 genesisTimes.set('mainnet', 1606824023n)
 genesisTimes.set('goerli', 1616508000n)
+
+export function tryBigInt(s) { try { return BigInt(s) } catch { return false } }
+
+export const startBlock = parseInt(process.env.START_BLOCK) || 'latest'
 
 export const provider = new ethers.JsonRpcProvider(process.env.RPC_URL || 'http://localhost:8545')
 export const networkName = await provider.getNetwork().then(n => n.name)
