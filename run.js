@@ -145,8 +145,8 @@ while (oDaoIndicesToProcess.length) {
   await Promise.all(oDaoIndicesToProcess.splice(0, MAX_CONCURRENT_NODES)
     .map(async i => {
       const nodeAddress = oDaoAddresses[i]
-      const joinTime = await cachedCall(
-        'rocketDAONodeTrusted', 'getMemberJoinedTime', [nodeAddress], 'finalized')
+      const joinTime = BigInt(await cachedCall(
+        'rocketDAONodeTrusted', 'getMemberJoinedTime', [nodeAddress], 'finalized'))
       const odaoTime = targetElBlockTimestamp - joinTime
       const participatedSeconds = odaoTime < intervalTime ? odaoTime : intervalTime
       oDaoParticipatedSeconds.set(nodeAddress, participatedSeconds)
