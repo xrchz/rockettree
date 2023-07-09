@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import { ethers } from 'ethers'
 import { provider, startBlock, slotsPerEpoch, networkName,
-         log, addressToUint64s, uint64sTo256, uint64sToAddress, cachedCall,
+         log, addressToUint64s, uint64sTo256, uint64sToAddress, socketCall, cachedCall,
          tryBigInt, iIdx, dIdx, iIdle, iLoading, iReady, iWorking, iExit } from './lib.js'
 
 const currentIndex = BigInt(await cachedCall('rocketRewardsPool', 'getRewardIndex', [], 'targetElBlock'))
@@ -48,29 +48,32 @@ const nodeEffectiveStakes = new Map()
 const MAX_CONCURRENT_MINIPOOLS = parseInt(process.env.MAX_CONCURRENT_MINIPOOLS) || 10
 const MAX_CONCURRENT_NODES = parseInt(process.env.MAX_CONCURRENT_NODES) || 10
 
+const targetElBlockTimestamp = BigInt(await socketCall(['targetElBlockTimestamp']))
+const intervalTime = BigInt(await socketCall(['intervalTime']))
+const targetSlotEpoch = BigInt(await socketCall(['targetSlotEpoch']))
+
 async function processNodeRPL(i) {
   const nodeAddress = nodeAddresses[i]
-  const minipoolCount = await cachedCall(
-    'rocketMinipoolManager', 'getNodeMinipoolCount', [nodeAddress], targetElBlock)
+  const minipoolCount = BigInt(await cachedCall(
+    'rocketMinipoolManager', 'getNodeMinipoolCount', [nodeAddress], 'targetElBlock'))
   log(3, `Processing ${nodeAddress}'s ${minipoolCount} minipools`)
   let eligibleBorrowedEth = 0n
   let eligibleBondedEth = 0n
-  async function processMinipool(addr) {
-    const minipool = getMinipool(addr)
-    const minipoolStatus = await cachedCall(minipool, 'getStatus', [], targetElBlock)
+  async function processMinipool(minipoolAddress) {
+    const minipoolStatus = parseInt(await cachedCall(minipoolAddress, 'getStatus', [], 'targetElBlock'))
     if (minipoolStatus != stakingStatus) return
     const pubkey = await cachedCall(
-      'rocketMinipoolManager', 'getMinipoolPubkey', [addr], 'finalized')
-    const validatorStatus = await getValidatorStatus(targetBcSlot, pubkey)
+      'rocketMinipoolManager', 'getMinipoolPubkey', [minipoolAddress], 'finalized')
+    const validatorStatus = JSON.parse(await socketCall(['beacon', 'getValidatorStatus', pubkey]))
     const activationEpoch = validatorStatus.activation_epoch
     const exitEpoch = validatorStatus.exit_epoch
     const eligible = activationEpoch != 'FAR_FUTURE_EPOCH' && BigInt(activationEpoch) < targetSlotEpoch &&
                      (exitEpoch == 'FAR_FUTURE_EPOCH' || targetSlotEpoch < BigInt(exitEpoch))
     if (eligible) {
-      const borrowedEth = await cachedCall(minipool, 'getUserDepositBalance', [], 'finalized')
-      eligibleBorrowedEth += BigInt(borrowedEth)
-      const bondedEth = await cachedCall(minipool, 'getNodeDepositBalance', [], 'finalized')
-      eligibleBondedEth += BigInt(bondedEth)
+      const borrowedEth = BigInt(await cachedCall(minipoolAddress, 'getUserDepositBalance', [], 'finalized'))
+      eligibleBorrowedEth += borrowedEth
+      const bondedEth = BigInt(await cachedCall(minipoolAddress, 'getNodeDepositBalance', [], 'finalized'))
+      eligibleBondedEth += bondedEth
     }
   }
   const minipoolIndicesToProcess = Array.from(Array(parseInt(minipoolCount)).keys())
@@ -85,12 +88,12 @@ async function processNodeRPL(i) {
   const minCollateral = eligibleBorrowedEth * minCollateralFraction / ratio
   const maxCollateral = eligibleBondedEth * maxCollateralFraction / ratio
   const nodeStake = BigInt(await cachedCall(
-    'rocketNodeStaking', 'getNodeRPLStake', [nodeAddress], targetElBlock)
+    'rocketNodeStaking', 'getNodeRPLStake', [nodeAddress], 'targetElBlock')
   )
   let nodeEffectiveStake = nodeStake < minCollateral ? 0n :
                            nodeStake < maxCollateral ? nodeStake : maxCollateral
-  const registrationTime = await cachedCall(
-    'rocketNodeManager', 'getNodeRegistrationTime', [nodeAddress], 'finalized')
+  const registrationTime = BigInt(await cachedCall(
+    'rocketNodeManager', 'getNodeRegistrationTime', [nodeAddress], 'finalized'))
   const nodeAge = targetElBlockTimestamp - registrationTime
   if (nodeAge < intervalTime)
     nodeEffectiveStake = nodeEffectiveStake * nodeAge / intervalTime
@@ -101,8 +104,6 @@ async function processNodeRPL(i) {
 
 const numberOfMinipools = BigInt(
   await cachedCall('rocketMinipoolManager', 'getMinipoolCount', [], 'targetElBlock'))
-
-process.exit()
 
 if (!process.env.SKIP_RPL) {
 
@@ -129,10 +130,10 @@ log(1, `totalCalculatedCollateralRewards: ${totalCalculatedCollateralRewards}`)
 if (collateralRewards - totalCalculatedCollateralRewards > numberOfMinipools)
   throw new Error('collateral calculation has excessive error')
 
-const oDaoCount = await cachedCall('rocketDAONodeTrusted', 'getMemberCount', [], targetElBlock)
+const oDaoCount = BigInt(await cachedCall('rocketDAONodeTrusted', 'getMemberCount', [], 'targetElBlock'))
 const oDaoIndices = Array.from(Array(parseInt(oDaoCount)).keys())
 const oDaoAddresses = await Promise.all(
-  oDaoIndices.map(i => cachedCall('rocketDAONodeTrusted', 'getMemberAt', [i], targetElBlock))
+  oDaoIndices.map(i => cachedCall('rocketDAONodeTrusted', 'getMemberAt', [i.toString()], 'targetElBlock'))
 )
 log(3, `oDaoAddresses: ${oDaoAddresses.slice(0, 5)}...`)
 
@@ -176,18 +177,8 @@ log(3, `pDAO rewards delta: ${actualPDaoRewards - pDaoRewards}`)
 
 if (currentIndex == 0) process.exit()
 
-const rocketSmoothingPool = await getRocketAddress('rocketSmoothingPool', targetElBlock)
-const smoothingPoolBalance = await provider.getBalance(rocketSmoothingPool, targetElBlock)
-log(2, `smoothingPoolBalance: ${smoothingPoolBalance}`)
-
-const previousIntervalEventFilter = rocketRewardsPool.filters.RewardSnapshot(currentIndex - 1n)
-const foundEvents = await rocketRewardsPool.queryFilter(previousIntervalEventFilter, 0, targetElBlock)
-if (foundEvents.length !== 1)
-  throw new Error(`Did not find exactly 1 RewardSnapshot event for Interval ${currentIndex - 1n}`)
-const previousIntervalEvent = foundEvents.pop()
-const RewardSubmission = previousIntervalEvent.args[1]
-const ExecutionBlock = RewardSubmission[1]
-const ConsensusBlock = RewardSubmission[2]
+const ExecutionBlock = BigInt(await socketCall(['ExecutionBlock']))
+const ConsensusBlock = BigInt(await socketCall(['ConsensusBlock']))
 
 const bnStartEpoch = tryBigInt(process.env.OVERRIDE_START_EPOCH) || ConsensusBlock / slotsPerEpoch + 1n
 log(2, `bnStartEpoch: ${bnStartEpoch}`)
@@ -234,6 +225,8 @@ function makeLock() {
 
 const farPastTime = 0n
 const farFutureTime = BigInt(1e18)
+
+process.exit()
 
 let totalMinpoolScore = 0n
 let successfulAttestations = 0n

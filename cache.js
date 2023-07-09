@@ -1,5 +1,6 @@
 import 'dotenv/config'
 import PouchDB from 'pouchdb-node'
+import { unlinkSync } from 'node:fs'
 import { ethers } from 'ethers'
 import { createServer } from 'node:net'
 import { log, tryBigInt, provider, startBlock, genesisTime,
@@ -308,7 +309,23 @@ const rocketMinipoolBondReducer = new ethers.Contract(
   provider)
 contracts.set('rocketMinipoolBondReducer', rocketMinipoolBondReducer)
 
-const server = createServer({allowHalfOpen: true}, socket => {
+const rocketSmoothingPool = await getRocketAddress('rocketSmoothingPool', targetElBlock)
+contracts.set('rocketSmoothingPool', rocketSmoothingPool)
+
+const smoothingPoolBalance = await provider.getBalance(rocketSmoothingPool, targetElBlock)
+log(2, `smoothingPoolBalance: ${smoothingPoolBalance}`)
+
+const currentIndex = await cachedCall(rocketRewardsPool, 'getRewardIndex', [], targetElBlock)
+const previousIntervalEventFilter = rocketRewardsPool.filters.RewardSnapshot(currentIndex - 1n)
+const foundEvents = await rocketRewardsPool.queryFilter(previousIntervalEventFilter, 0, targetElBlock)
+if (foundEvents.length !== 1)
+  throw new Error(`Did not find exactly 1 RewardSnapshot event for Interval ${currentIndex - 1n}`)
+const previousIntervalEvent = foundEvents.pop()
+const RewardSubmission = previousIntervalEvent.args[1]
+const ExecutionBlock = RewardSubmission[1]
+const ConsensusBlock = RewardSubmission[2]
+
+const server = createServer({allowHalfOpen: true, noDelay: true}, socket => {
   socket.setEncoding('utf8')
   const data = []
   socket.on('data', (chunk) => data.push(chunk))
@@ -317,26 +334,39 @@ const server = createServer({allowHalfOpen: true}, socket => {
     const splits = request.split('/')
     if (splits.length == 5 && splits[0] == 'contract') {
       const [contractName, fn, argsJoined, blockTagName] = splits.slice(1)
-      const args = argsJoined.split(',')
+      const args = argsJoined.length ? argsJoined.split(',') : []
       const contract = getContract(contractName)
       const blockTag = blockTagName == 'targetElBlock' ? targetElBlock : blockTagName
       const result = await cachedCall(contract, fn, args, blockTag)
       socket.end(result.toString())
     }
-    else if (splits.length >= 3 && splits[0] == 'beacon') {
-      if (splits[1] == 'getAttestationsFromSlot' && splits.length == 3)
+    else if (splits.length == 3 && splits[0] == 'beacon') {
+      if (splits[1] == 'getAttestationsFromSlot')
         socket.end(JSON.stringify(await getAttestationsFromSlot(splits[2])))
-      else if (splits[1] == 'getValidatorStatus' && splits.length == 4)
-        socket.end(JSON.stringify(await getValidatorStatus(splits[2], splits[3])))
-      else if (splits[1] == 'getIndexFromPubkey' && splits.length == 3)
+      else if (splits[1] == 'getValidatorStatus')
+        socket.end(JSON.stringify(await getValidatorStatus(targetBcSlot, splits[2])))
+      else if (splits[1] == 'getIndexFromPubkey')
         socket.end((await getIndexFromPubkey(splits[2])).toString())
-      else if (splits[1] == 'getCommittees' && splits.length == 3)
+      else if (splits[1] == 'getCommittees')
         socket.end(JSON.stringify(await getCommittees(splits[2])))
       else
         socket.end(`invalid request: unknown beacon request ${splits[1]}`)
     }
+    else if (splits.length == 1 && splits[0] == 'ExecutionBlock')
+      socket.end(ExecutionBlock.toString())
+    else if (splits.length == 1 && splits[0] == 'ConsensusBlock')
+      socket.end(ConsensusBlock.toString())
+    else if (splits.length == 1 && splits[0] == 'targetElBlockTimestamp')
+      socket.end(targetElBlockTimestamp.toString())
+    else if (splits.length == 1 && splits[0] == 'targetSlotEpoch')
+      socket.end(targetSlotEpoch.toString())
+    else if (splits.length == 1 && splits[0] == 'intervalTime')
+      socket.end(intervalTime.toString())
     else
       socket.end('invalid request')
   })
 })
+log(2, 'starting socket server')
 server.listen(socketPath)
+process.on('SIGINT', () => { unlinkSync(socketPath); process.exit() })
+process.on('uncaughtExceptionMonitor', () => unlinkSync(socketPath))

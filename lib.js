@@ -4,16 +4,19 @@ import { createConnection } from 'node:net'
 
 export const socketPath = process.env.SOCKET || '/tmp/rockettree.ipc'
 
-export function cachedCall(contractName, fn, args, blockTag) {
+export function socketCall(request) {
   const socket = createConnection({path: socketPath, allowHalfOpen: true, noDelay: true})
   socket.setEncoding('utf8')
   const data = []
   socket.on('data', (d) => data.push(d))
   return new Promise(resolve => {
     socket.on('end', () => resolve(data.join('')))
-    socket.end(['contract', contractName, fn, args.join(), blockTag].join('/'))
+    socket.end(request.join('/'))
   })
 }
+
+export const cachedCall = (contractName, fn, args, blockTag) =>
+  socketCall(['contract', contractName, fn, args.join(), blockTag])
 
 const verbosity = parseInt(process.env.VERBOSITY) || 2
 export const log = (v, s) => verbosity >= v ? console.log(s) : undefined
