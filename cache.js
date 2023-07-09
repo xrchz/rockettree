@@ -315,6 +315,25 @@ contracts.set('rocketSmoothingPool', rocketSmoothingPool)
 const smoothingPoolBalance = await provider.getBalance(rocketSmoothingPool, targetElBlock)
 log(2, `smoothingPoolBalance: ${smoothingPoolBalance}`)
 
+async function nodeSmoothingTimes(nodeAddress, blockTag, times) {
+  const key = `/${networkName}/${blockTag}/nodeSmoothingTimes/${nodeAddress}`
+  if (times) {
+    if (times === 'check')
+      return await db.allDocs({key}).then(result => result.rows.length)
+    else
+      await db.put({_id: key,
+        optInTime: times.optInTime,
+        optOutTime: times.optOutTime})
+  }
+  else {
+    const doc = await db.get(key)
+    return {
+      optInTime: doc.optInTime,
+      optOutTime: doc.optOutTime
+    }
+  }
+}
+
 const currentIndex = await cachedCall(rocketRewardsPool, 'getRewardIndex', [], targetElBlock)
 const previousIntervalEventFilter = rocketRewardsPool.filters.RewardSnapshot(currentIndex - 1n)
 const foundEvents = await rocketRewardsPool.queryFilter(previousIntervalEventFilter, 0, targetElBlock)
@@ -352,6 +371,14 @@ const server = createServer({allowHalfOpen: true, noDelay: true}, socket => {
       else
         socket.end(`invalid request: unknown beacon request ${splits[1]}`)
     }
+    else if (splits.length == 3 && splits[0] == 'nodeSmoothingTimes' && splits[2] == 'check')
+      socket.end((await nodeSmoothingTimes(splits[1], targetElBlock, splits[2])) ? 't' : '')
+    else if (splits.length == 4 && splits[0] == 'nodeSmoothingTimes') {
+      await nodeSmoothingTimes(splits[1], targetElBlock, {optInTime: splits[2], optOutTime: splits[3]})
+      socket.end('success')
+    }
+    else if (splits.length == 2 && splits[0] == 'nodeSmoothingTimes')
+      socket.end(JSON.stringify(await nodeSmoothingTimes(splits[1], targetElBlock)))
     else if (splits.length == 1 && splits[0] == 'ExecutionBlock')
       socket.end(ExecutionBlock.toString())
     else if (splits.length == 1 && splits[0] == 'ConsensusBlock')

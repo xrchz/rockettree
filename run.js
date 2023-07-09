@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import { ethers } from 'ethers'
-import { provider, startBlock, slotsPerEpoch, networkName,
+import { provider, startBlock, slotsPerEpoch, networkName, stakingStatus,
          log, addressToUint64s, uint64sTo256, uint64sToAddress, socketCall, cachedCall,
          tryBigInt, iIdx, dIdx, iIdle, iLoading, iReady, iWorking, iExit } from './lib.js'
 
@@ -24,8 +24,6 @@ log(2, `pendingRewards: ${pendingRewards}`)
 log(2, `collateralRewards: ${collateralRewards}`)
 log(2, `oDaoRewards: ${oDaoRewards}`)
 log(2, `pDaoRewards: ${pDaoRewards}`)
-
-const stakingStatus = 2
 
 const nodeCount = BigInt(await cachedCall('rocketNodeManager', 'getNodeCount', [], 'targetElBlock'))
 log(2, `nodeCount: ${nodeCount}`)
@@ -191,6 +189,50 @@ const elStartBlock = await getBlockNumberFromSlot(bnStartBlock)
 log(2, `elStartBlock: ${elStartBlock}`)
 */
 
+const possiblyEligibleMinipoolIndexArray = new BigUint64Array(
+  new SharedArrayBuffer(
+    BigUint64Array.BYTES_PER_ELEMENT * (1 + (1 + 4 + 4) * parseInt(numberOfMinipools))
+  )
+)
+
+import { Worker } from 'node:worker_threads'
+const NUM_WORKERS = parseInt(process.env.NUM_WORKERS) || 12
+
+const smoothingWorkers = Array.from(Array(NUM_WORKERS).keys()).map(i => {
+  const data = {
+    worker: new Worker('./smoothing.js', {workerData: possiblyEligibleMinipoolIndexArray}),
+    promise: i,
+    resolveWhenReady: null
+  }
+  data.worker.on('message', () => {
+    if (typeof data.resolveWhenReady == 'function')
+      data.resolveWhenReady(i)
+  })
+  return data
+})
+
+async function getSmoothingWorker() {
+  const i = await Promise.any(smoothingWorkers.map(data => data.promise))
+  smoothingWorkers[i].promise = new Promise(resolve => {
+    smoothingWorkers[i].resolveWhenReady = resolve
+  })
+  return smoothingWorkers[i].worker
+}
+
+for (const i of nodeIndices) {
+  const left = nodeIndices.length - i
+  if (left % 10 == 0)
+    log(3, `${left} nodes left to process smoothing`)
+  const nodeAddress = nodeAddresses[i]
+  const worker = await getSmoothingWorker()
+  worker.postMessage({i, nodeAddress})
+}
+
+await Promise.all(smoothingWorkers.map(data => data.promise))
+smoothingWorkers.forEach(data => data.worker.postMessage('exit'))
+
+process.exit()
+
 function makeLock() {
   const queue = []
   let locked = false
@@ -223,110 +265,9 @@ function makeLock() {
   }
 }
 
-const farPastTime = 0n
-const farFutureTime = BigInt(1e18)
-
-process.exit()
-
-let totalMinpoolScore = 0n
-let successfulAttestations = 0n
-const minipoolScores = new Map()
-const goodAttestations = new Map()
-const missedAttestations = new Map()
-let possiblyEligibleMinipoolIndices = 0
-const possiblyEligibleMinipoolIndexArray = new BigUint64Array(
-  new SharedArrayBuffer(
-    BigUint64Array.BYTES_PER_ELEMENT * (1 + 4 + 4) * parseInt(numberOfMinipools)
-  )
-)
-const possiblyEligibleMinipoolIndexArrayLock = makeLock()
-
-async function nodeSmoothingTimes(nodeAddress, blockTag, times) {
-  const key = `/${networkName}/${blockTag}/nodeSmoothingTimes/${nodeAddress}`
-  if (times) {
-    if (times === 'check')
-      return await db.allDocs({key}).then(result => result.rows.length)
-    else
-      await db.put({_id: key,
-        optInTime: times.optInTime.toString(),
-        optOutTime: times.optOutTime.toString()})
-  }
-  else {
-    const doc = await db.get(key)
-    return {
-      optInTime: BigInt(doc.optInTime),
-      optOutTime: BigInt(doc.optOutTime)
-    }
-  }
-}
-
-async function processNodeSmoothing(i) {
-  const nodeAddress = nodeAddresses[i]
-  const minipoolCount = await cachedCall(
-    rocketMinipoolManager, 'getNodeMinipoolCount', [nodeAddress], targetElBlock)
-  async function minipoolEligibility(i) {
-    const minipoolAddress = await cachedCall(
-      rocketMinipoolManager, 'getNodeMinipoolAt', [nodeAddress, i], targetElBlock)
-    const minipool = getMinipool(minipoolAddress)
-    const minipoolStatus = await cachedCall(minipool, 'getStatus', [], targetElBlock)
-    const penaltyCount = await cachedCall(
-      rocketNetworkPenalties, 'getPenaltyCount', [minipoolAddress], targetElBlock)
-    if (minipoolStatus == stakingStatus) {
-      if (penaltyCount >= 3)
-        return 'cheater'
-      else {
-        const pubkey = await cachedCall(
-          rocketMinipoolManager, 'getMinipoolPubkey', [minipoolAddress], 'finalized')
-        const index = await getIndexFromPubkey(pubkey)
-        await possiblyEligibleMinipoolIndexArrayLock(() =>
-          possiblyEligibleMinipoolIndexArray.set(
-            [index, ...addressToUint64s(nodeAddress), ...addressToUint64s(minipoolAddress)],
-            (1 + 4 + 4) * possiblyEligibleMinipoolIndices++)
-        )
-        return 'staking'
-      }
-    }
-  }
-  let staking = false
-  for (const i of Array(parseInt(minipoolCount)).keys()) {
-    const result = await minipoolEligibility(i)
-    if (result === 'cheater') {
-      log(3, `${nodeAddress} is a cheater`)
-      return
-    }
-    else if (result === 'staking')
-      staking = true
-  }
-  if (await nodeSmoothingTimes(nodeAddress, targetElBlock, 'check'))
-    return
-  if (!staking) {
-    log(4, `${nodeAddress} has no staking minipools: skipping`)
-    return
-  }
-  const isOptedIn = await cachedCall(
-    rocketNodeManager, 'getSmoothingPoolRegistrationState', [nodeAddress], targetElBlock)
-  const statusChangeTime = await cachedCall(
-    rocketNodeManager, 'getSmoothingPoolRegistrationChanged', [nodeAddress], targetElBlock)
-  const optInTime = isOptedIn ? statusChangeTime : farPastTime
-  const optOutTime = isOptedIn ? farFutureTime : statusChangeTime
-  await nodeSmoothingTimes(nodeAddress, targetElBlock, {optInTime, optOutTime})
-}
-
-const nodeIndicesToProcessSmoothing = nodeIndices.slice()
-while (nodeIndicesToProcessSmoothing.length) {
-  log(3, `${nodeIndicesToProcessSmoothing.length} nodes left to process smoothing`)
-  await Promise.all(
-    nodeIndicesToProcessSmoothing.splice(0, MAX_CONCURRENT_NODES)
-    .map(i => processNodeSmoothing(i))
-  )
-}
-
 const rocketPoolDuties = new Map()
 const dutiesLock = makeLock()
 
-import { Worker } from 'node:worker_threads'
-
-const NUM_WORKERS = parseInt(process.env.NUM_WORKERS) || 12
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE) || 8192
 const MAX_BATCH_BYTES = BigUint64Array.BYTES_PER_ELEMENT * BATCH_SIZE
 

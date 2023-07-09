@@ -36,6 +36,8 @@ export const genesisTime = genesisTimes.get(networkName)
 export const secondsPerSlot = 12n
 export const slotsPerEpoch = 32n
 
+export const stakingStatus = 2
+
 const max64 = 2n ** 64n
 export function uint256To64s(n) {
   const uint64s = []
