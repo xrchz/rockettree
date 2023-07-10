@@ -1,8 +1,7 @@
 import 'dotenv/config'
 import { ethers } from 'ethers'
-import { provider, startBlock, slotsPerEpoch, networkName, stakingStatus,
-         log, addressToUint64s, uint64sTo256, uint64sToAddress, socketCall, cachedCall,
-         tryBigInt, iIdx, dIdx, iIdle, iLoading, iReady, iWorking, iExit } from './lib.js'
+import { provider, startBlock, slotsPerEpoch, networkName, stakingStatus, tryBigInt,
+         log, addressToUint64s, uint64sTo256, uint64sToAddress, socketCall, cachedCall } from './lib.js'
 
 const currentIndex = BigInt(await cachedCall('rocketRewardsPool', 'getRewardIndex', [], 'targetElBlock'))
 log(2, `currentIndex: ${currentIndex}`)
@@ -211,12 +210,12 @@ const smoothingWorkers = Array.from(Array(NUM_WORKERS).keys()).map(i => {
   return data
 })
 
-async function getSmoothingWorker() {
-  const i = await Promise.any(smoothingWorkers.map(data => data.promise))
-  smoothingWorkers[i].promise = new Promise(resolve => {
-    smoothingWorkers[i].resolveWhenReady = resolve
+async function getWorker(workers) {
+  const i = await Promise.any(workers.map(data => data.promise))
+  workers[i].promise = new Promise(resolve => {
+    workers[i].resolveWhenReady = resolve
   })
-  return smoothingWorkers[i].worker
+  return workers[i].worker
 }
 
 for (const i of nodeIndices) {
@@ -224,14 +223,14 @@ for (const i of nodeIndices) {
   if (left % 10 == 0)
     log(3, `${left} nodes left to process smoothing`)
   const nodeAddress = nodeAddresses[i]
-  const worker = await getSmoothingWorker()
+  const worker = await getWorker(smoothingWorkers)
   worker.postMessage({i, nodeAddress})
 }
 
 await Promise.all(smoothingWorkers.map(data => data.promise))
 smoothingWorkers.forEach(data => data.worker.postMessage('exit'))
 
-process.exit()
+log(3, `${possiblyEligibleMinipoolIndexArray[0]} eligible minipools`)
 
 function makeLock() {
   const queue = []
@@ -268,144 +267,54 @@ function makeLock() {
 const rocketPoolDuties = new Map()
 const dutiesLock = makeLock()
 
-const BATCH_SIZE = parseInt(process.env.BATCH_SIZE) || 8192
-const MAX_BATCH_BYTES = BigUint64Array.BYTES_PER_ELEMENT * BATCH_SIZE
-
-const makeWorkerData = () => ({
-    possiblyEligibleMinipoolIndices,
-    possiblyEligibleMinipoolIndexArray,
-    signal: new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2)),
-    committees: new BigUint64Array(new SharedArrayBuffer(MAX_BATCH_BYTES))
+const dutiesWorkers = Array.from(Array(NUM_WORKERS).keys()).map(w => {
+  const data = {
+    worker: new Worker('./duties.js', {workerData: possiblyEligibleMinipoolIndexArray}),
+    promise: w,
+    resolveWhenReady: null
+  }
+  data.worker.on('message', async (message) => {
+    if (message === 'done') {
+      if (typeof data.resolveWhenReady == 'function')
+        data.resolveWhenReady(w)
+      return
+    }
+    let i = 0
+    while (i < message.length) {
+      const slotIndex = message[i++]
+      const committeeIndex = message[i++]
+      const minipoolScore64s = []
+      for (const _ of Array(4)) minipoolScore64s.push(message[i++])
+      const minipoolScore = uint64sTo256(minipoolScore64s)
+      const position = message[i++]
+      const validatorIndex = message[i++]
+      const minipoolAddress64s = []
+      for (const _ of Array(4)) minipoolAddress64s.push(message[i++])
+      const minipoolAddress = uint64sToAddress(minipoolAddress64s)
+      const dutyKey = `${slotIndex},${committeeIndex}`
+      await dutiesLock(() => {
+        if (!rocketPoolDuties.has(dutyKey))
+          rocketPoolDuties.set(dutyKey, [])
+        log(3, `Storing duty ${dutyKey} ${validatorIndex}`)
+        rocketPoolDuties.get(dutyKey).push(
+          {minipoolAddress, validatorIndex, position, minipoolScore}
+        )
+      })
+    }
+  })
+  return data
 })
-
-const minipoolCachedCallLock = makeLock()
-
-function makeMessageHandler(worker) {
-  return async function handler (message) {
-    if (typeof message == 'string') {
-      worker.postMessage(await nodeSmoothingTimes(message, targetElBlock))
-    }
-    else if (message instanceof BigUint64Array) {
-      let i = 0
-      while (i < message.length) {
-        const slotIndex = message[i++]
-        const committeeIndex = message[i++]
-        const minipoolScore64s = []
-        for (const _ of Array(4)) minipoolScore64s.push(message[i++])
-        const minipoolScore = uint64sTo256(minipoolScore64s)
-        const position = message[i++]
-        const validatorIndex = message[i++]
-        const minipoolAddress64s = []
-        for (const _ of Array(4)) minipoolAddress64s.push(message[i++])
-        const minipoolAddress = uint64sToAddress(minipoolAddress64s)
-        const dutyKey = `${slotIndex},${committeeIndex}`
-        await dutiesLock(() => {
-          if (!rocketPoolDuties.has(dutyKey))
-            rocketPoolDuties.set(dutyKey, [])
-          // log(3, `Storing duty ${dutyKey} ${validatorIndex}`)
-          rocketPoolDuties.get(dutyKey).push(
-            {minipoolAddress, validatorIndex, position, minipoolScore}
-          )
-        })
-      }
-    }
-    else {
-      const {minipoolAddress, key} = message
-      const {contract, args} = key.startsWith('getLastBondReduction') ?
-        {contract: rocketMinipoolBondReducer, args: [minipoolAddress]} :
-        {contract: getMinipool(minipoolAddress), args: []}
-      await minipoolCachedCallLock(async () =>
-        worker.postMessage(await cachedCall(contract, key, args, 'finalized')))
-    }
-  }
-}
-
-const workers = Array(NUM_WORKERS).fill().map(() => {
-  const workerData = makeWorkerData()
-  const worker = new Worker('./worker.js', {workerData})
-  worker.on('message', makeMessageHandler(worker))
-  return {worker, workerData}
-})
-
-async function idleToLoading(i) {
-  const {worker, workerData} = workers[i]
-  while (true) {
-    const prev = Atomics.compareExchange(workerData.signal, iIdx, iIdle, iLoading)
-    if (prev == iIdle) break
-    const result = Atomics.waitAsync(workerData.signal, iIdx, prev)
-    if (result.async) await result.value
-  }
-  return i
-}
-
-const idleWorkers = Array.from(Array(NUM_WORKERS).keys()).map(idleToLoading)
-const idleWorkersLock = makeLock()
-
-async function getIdleWorker() {
-  const i = await idleWorkersLock(() =>
-    Promise.any(idleWorkers).then(i => {
-      idleWorkers.splice(i, 1, idleToLoading(i))
-      return i
-    }))
-  return workers[i]
-}
-
-async function processEpochDuties(epochIndex) {
-  const committees = await getCommittees(epochIndex)
-  let batchSize = BATCH_SIZE
-  let numCommittees, worker, workerData
-  for (const committee of committees) {
-    const newSize = batchSize + 3 + committee.validators.length
-    if (newSize > BATCH_SIZE) {
-      if (numCommittees) {
-        Atomics.store(workerData.signal, dIdx, numCommittees)
-        const prev = Atomics.compareExchange(workerData.signal, iIdx, iLoading, iReady)
-        if (prev != iLoading) {
-          console.error(`${worker.threadId} in wrong state ${prev}`)
-          process.exit(1)
-        }
-        Atomics.notify(workerData.signal, iIdx)
-      }
-      batchSize = 0
-      numCommittees = 0
-      ;({worker, workerData} = await getIdleWorker())
-    }
-    numCommittees++
-    workerData.committees[batchSize++] = BigInt(committee.slot)
-    workerData.committees[batchSize++] = BigInt(committee.index)
-    workerData.committees[batchSize++] = BigInt(committee.validators.length)
-    for (const validatorIndex of committee.validators)
-      workerData.committees[batchSize++] = BigInt(validatorIndex)
-  }
-}
-
-const MAX_CONCURRENT_EPOCHS = parseInt(process.env.MAX_CONCURRENT_EPOCHS) || 5
 
 const intervalEpochsToGetDuties = Array.from(
   Array(parseInt(targetSlotEpoch - bnStartEpoch + 1n)).keys())
 .map(i => bnStartEpoch + BigInt(i))
 
 while (intervalEpochsToGetDuties.length) {
-  log(3, `${intervalEpochsToGetDuties.length} epochs left to get duties`)
-  await Promise.all(
-    intervalEpochsToGetDuties.splice(0, MAX_CONCURRENT_EPOCHS)
-    .map(i => processEpochDuties(i))
-  )
+  if (intervalEpochsToGetDuties.length % 10 == 0)
+    log(3, `${intervalEpochsToGetDuties.length} epochs left to get duties`)
+  const worker = await getWorker(dutiesWorkers)
+  worker.postMessage(intervalEpochsToGetDuties.shift())
 }
 
-await Promise.all(workers.map(async w => {
-  const exited = new Promise(resolve => w.worker.on('exit', resolve))
-  while (true) {
-    const prev = Atomics.compareExchange(w.workerData.signal, iIdx, iIdle, iExit)
-    if (prev == iIdle) {
-      Atomics.notify(w.workerData.signal, iIdx)
-      break
-    }
-    else {
-      console.warn(`Failed to idle->exit ${w.worker.threadId}, retrying`)
-      const result = Atomics.waitAsync(w.workerData.signal, iIdx)
-      if (result.async) await result.value
-    }
-  }
-  return exited
-}))
+await Promise.all(dutiesWorkers.map(data => data.promise))
+dutiesWorkers.forEach(data => data.worker.postMessage('exit'))
