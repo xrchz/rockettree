@@ -49,7 +49,8 @@ async function processCommittees(epochIndex) {
     const slotIndex = BigInt(committee.slot)
     const committeeIndex = BigInt(committee.index)
     const blockTime = genesisTime + secondsPerSlot * slotIndex
-    for (const [position, validatorIndex] of committee.validators.entries()) {
+    for (const [position, validatorIndexStr] of committee.validators.entries()) {
+      const validatorIndex = parseInt(validatorIndexStr)
       if (!possiblyEligibleMinipools.has(validatorIndex)) continue
       const {nodeAddress, minipoolAddress} = possiblyEligibleMinipools.get(validatorIndex)
       const {optInTime, optOutTime} = await getNodeSmoothingTimes(nodeAddress)
@@ -77,7 +78,7 @@ async function processCommittees(epochIndex) {
       dutiesToReturn.buffer.resize(newByteLength)
       dutiesToReturn.set([slotIndex, committeeIndex,
                           ...uint256To64s(minipoolScore),
-                          BigInt(position), validatorIndex,
+                          BigInt(position), BigInt(validatorIndex),
                           ...addressToUint64s(minipoolAddress)],
                          eltsPerDuty * numDuties++)
     }
