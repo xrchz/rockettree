@@ -215,7 +215,7 @@ async function getWorker(workers) {
   workers[i].promise = new Promise(resolve => {
     workers[i].resolveWhenReady = resolve
   })
-  return workers[i].worker
+  return [workers[i].worker, i]
 }
 
 for (const i of nodeIndices) {
@@ -223,7 +223,7 @@ for (const i of nodeIndices) {
   if (left % 10 == 0)
     log(3, `${left} nodes left to process smoothing`)
   const nodeAddress = nodeAddresses[i]
-  const worker = await getWorker(smoothingWorkers)
+  const [worker] = await getWorker(smoothingWorkers)
   worker.postMessage({i, nodeAddress})
 }
 
@@ -243,6 +243,7 @@ const dutiesWorkers = Array.from(Array(NUM_WORKERS).keys()).map(w => {
   }
   data.worker.on('message', async (message) => {
     if (message === 'done') {
+      await socketCall(['duties', data.epoch, data.duties.join()])
       if (typeof data.resolveWhenReady == 'function')
         data.resolveWhenReady(w)
       return
@@ -259,6 +260,7 @@ const dutiesWorkers = Array.from(Array(NUM_WORKERS).keys()).map(w => {
       for (const _ of Array(3)) minipoolAddress64s.push(message[i++])
       const minipoolAddress = uint64sToAddress(minipoolAddress64s)
       const dutyKey = `${slotIndex},${committeeIndex}`
+      data.duties.push(slotIndex.toString(), committeeIndex.toString(), minipoolAddress, position.toString(), minipoolScore.toString())
       await dutiesLock(() => {
         if (!rocketPoolDuties.has(dutyKey))
           rocketPoolDuties.set(dutyKey, [])
@@ -275,11 +277,30 @@ const intervalEpochsToGetDuties = Array.from(
   Array(parseInt(targetSlotEpoch - bnStartEpoch + 1n)).keys())
 .map(i => bnStartEpoch + BigInt(i))
 
+const timestamp = () => Intl.DateTimeFormat('en-GB',
+  {hour: 'numeric', minute: 'numeric', second: 'numeric'})
+  .format(new Date())
+
 while (intervalEpochsToGetDuties.length) {
   if (intervalEpochsToGetDuties.length % 10 == 0)
-    log(3, `${intervalEpochsToGetDuties.length} epochs left to get duties`)
-  const worker = await getWorker(dutiesWorkers)
-  worker.postMessage(intervalEpochsToGetDuties.shift())
+    log(3, `${timestamp()}: ${intervalEpochsToGetDuties.length} epochs left to get duties (got ${rocketPoolDuties.size} so far)`)
+  const epoch = intervalEpochsToGetDuties.shift().toString()
+  if (await socketCall(['duties', epoch, 'check'])) {
+    const duties = await socketCall(['duties', epoch]).then(s => s.split(','))
+    while (duties.length) {
+      const [slotIndex, committeeIndex, minipoolAddress] = duties.splice(0, 3)
+      const position = BigInt(duties.shift())
+      const minipoolScore = BigInt(duties.shift())
+      const dutyKey = `${slotIndex},${committeeIndex}`
+      if (!rocketPoolDuties.has(dutyKey)) rocketPoolDuties.set(dutyKey, [])
+      rocketPoolDuties.get(dutyKey).push({minipoolAddress, position, minipoolScore})
+    }
+    continue
+  }
+  const [worker, i] = await getWorker(dutiesWorkers)
+  dutiesWorkers[i].epoch = epoch
+  dutiesWorkers[i].duties = []
+  worker.postMessage(epoch)
 }
 
 await Promise.all(dutiesWorkers.map(data => data.promise))
