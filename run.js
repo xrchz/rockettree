@@ -190,7 +190,7 @@ log(2, `elStartBlock: ${elStartBlock}`)
 
 const possiblyEligibleMinipoolIndexArray = new BigUint64Array(
   new SharedArrayBuffer(
-    BigUint64Array.BYTES_PER_ELEMENT * (1 + (1 + 4 + 4) * parseInt(numberOfMinipools))
+    BigUint64Array.BYTES_PER_ELEMENT * (1 + (1 + 3 + 3) * parseInt(numberOfMinipools))
   )
 )
 
@@ -255,17 +255,15 @@ const dutiesWorkers = Array.from(Array(NUM_WORKERS).keys()).map(w => {
       for (const _ of Array(4)) minipoolScore64s.push(message[i++])
       const minipoolScore = uint64sTo256(minipoolScore64s)
       const position = message[i++]
-      const validatorIndex = message[i++]
       const minipoolAddress64s = []
-      for (const _ of Array(4)) minipoolAddress64s.push(message[i++])
+      for (const _ of Array(3)) minipoolAddress64s.push(message[i++])
       const minipoolAddress = uint64sToAddress(minipoolAddress64s)
       const dutyKey = `${slotIndex},${committeeIndex}`
       await dutiesLock(() => {
         if (!rocketPoolDuties.has(dutyKey))
           rocketPoolDuties.set(dutyKey, [])
-        log(3, `Storing duty ${dutyKey} ${validatorIndex}`)
         rocketPoolDuties.get(dutyKey).push(
-          {minipoolAddress, validatorIndex, position, minipoolScore}
+          {minipoolAddress, position, minipoolScore}
         )
       })
     }

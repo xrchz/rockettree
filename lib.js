@@ -39,9 +39,9 @@ export const slotsPerEpoch = 32n
 export const stakingStatus = 2
 
 const max64 = 2n ** 64n
-export function uint256To64s(n) {
+export function uint256To64s(n, z) {
   const uint64s = []
-  for (const _ of Array(4)) {
+  for (const _ of Array(z || 4)) {
     uint64s.push(n % max64)
     n >>= 64n
   }
@@ -55,7 +55,7 @@ export function uint64sTo256(a) {
   }
   return n
 }
-export const addressToUint64s = s => uint256To64s(BigInt(s))
+export const addressToUint64s = s => uint256To64s(BigInt(s), 3)
 export const uint64sToAddress = a => ethers.getAddress(`0x${uint64sTo256(a).toString(16).padStart(40, '0')}`)
 
 export function makeLock() {

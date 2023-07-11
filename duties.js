@@ -7,12 +7,12 @@ const possiblyEligibleMinipools = new Map()
 let i = 0
 const possiblyEligibleMinipoolIndices = workerData[0]
 while (i < possiblyEligibleMinipoolIndices) {
-  const [index, nodeAddress0, nodeAddress1, nodeAddress2, nodeAddress3,
-         minipoolAddress0, minipoolAddress1, minipoolAddress2, minipoolAddress3] =
-    workerData.slice(1 + (1 + 4 + 4) * i, 1 + (1 + 4 + 4) * ++i)
+  const [index, nodeAddress0, nodeAddress1, nodeAddress2,
+         minipoolAddress0, minipoolAddress1, minipoolAddress2] =
+    workerData.slice(1 + (1 + 3 + 3) * i, 1 + (1 + 3 + 3) * ++i)
   possiblyEligibleMinipools.set(parseInt(index), {
-    nodeAddress: uint64sToAddress([nodeAddress0, nodeAddress1, nodeAddress2, nodeAddress3]),
-    minipoolAddress: uint64sToAddress([minipoolAddress0, minipoolAddress1, minipoolAddress2, minipoolAddress3])
+    nodeAddress: uint64sToAddress([nodeAddress0, nodeAddress1, nodeAddress2]),
+    minipoolAddress: uint64sToAddress([minipoolAddress0, minipoolAddress1, minipoolAddress2])
   })
 }
 
@@ -28,7 +28,7 @@ async function getNodeSmoothingTimes(nodeAddress) {
   return value
 }
 
-const eltsPerDuty = 1 + 1 + 4 + 1 + 1 + 4
+const eltsPerDuty = 1 + 1 + 1 + 4 + 3
 const estimatedDutiesPerCommittee = 3
 const numCommitteesPerBatch = process.env.BATCH_SIZE || 1024
 
@@ -76,9 +76,8 @@ async function processCommittees(epochIndex) {
         numDuties = 0
       }
       dutiesToReturn.buffer.resize(newByteLength)
-      dutiesToReturn.set([slotIndex, committeeIndex,
+      dutiesToReturn.set([slotIndex, committeeIndex, BigInt(position),
                           ...uint256To64s(minipoolScore),
-                          BigInt(position), BigInt(validatorIndex),
                           ...addressToUint64s(minipoolAddress)],
                          eltsPerDuty * numDuties++)
     }

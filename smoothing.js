@@ -23,7 +23,7 @@ async function processNodeSmoothing(i, nodeAddress) {
         const currentIndex = parseInt(Atomics.add(workerData, 0, 1n))
         workerData.set(
           [index, ...addressToUint64s(nodeAddress), ...addressToUint64s(minipoolAddress)],
-          1 + (1 + 4 + 4) * currentIndex)
+          1 + (1 + 3 + 3) * currentIndex)
         return 'staking'
       }
     }
