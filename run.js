@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import { ethers } from 'ethers'
-import { provider, startBlock, slotsPerEpoch, networkName, stakingStatus, tryBigInt,
+import { provider, startBlock, slotsPerEpoch, networkName, stakingStatus, tryBigInt, makeLock,
          log, addressToUint64s, uint64sTo256, uint64sToAddress, socketCall, cachedCall } from './lib.js'
 
 const currentIndex = BigInt(await cachedCall('rocketRewardsPool', 'getRewardIndex', [], 'targetElBlock'))
@@ -232,38 +232,6 @@ smoothingWorkers.forEach(data => data.worker.postMessage('exit'))
 
 log(3, `${possiblyEligibleMinipoolIndexArray[0]} eligible minipools`)
 
-function makeLock() {
-  const queue = []
-  let locked = false
-
-  return function execute(fn) {
-    return acquire().then(fn).then(
-      r => {
-        release()
-        return r
-      },
-      e => {
-        release()
-        throw e
-      })
-  }
-
-  function acquire() {
-    if (locked)
-      return new Promise(resolve => queue.push(resolve))
-    else {
-      locked = true
-      return Promise.resolve()
-    }
-  }
-
-  function release() {
-    const next = queue.shift()
-    if (next) next()
-    else locked = false
-  }
-}
-
 const rocketPoolDuties = new Map()
 const dutiesLock = makeLock()
 
@@ -318,3 +286,5 @@ while (intervalEpochsToGetDuties.length) {
 
 await Promise.all(dutiesWorkers.map(data => data.promise))
 dutiesWorkers.forEach(data => data.worker.postMessage('exit'))
+
+log(3, `Got ${rocketPoolDuties.size} minipool duties`)

@@ -57,3 +57,35 @@ export function uint64sTo256(a) {
 }
 export const addressToUint64s = s => uint256To64s(BigInt(s))
 export const uint64sToAddress = a => ethers.getAddress(`0x${uint64sTo256(a).toString(16).padStart(40, '0')}`)
+
+export function makeLock() {
+  const queue = []
+  let locked = false
+
+  return function execute(fn) {
+    return acquire().then(fn).then(
+      r => {
+        release()
+        return r
+      },
+      e => {
+        release()
+        throw e
+      })
+  }
+
+  function acquire() {
+    if (locked)
+      return new Promise(resolve => queue.push(resolve))
+    else {
+      locked = true
+      return Promise.resolve()
+    }
+  }
+
+  function release() {
+    const next = queue.shift()
+    if (next) next()
+    else locked = false
+  }
+}

@@ -3,11 +3,14 @@ import PouchDB from 'pouchdb-node'
 import { unlinkSync } from 'node:fs'
 import { ethers } from 'ethers'
 import { createServer } from 'node:net'
-import { log, tryBigInt, provider, startBlock, genesisTime,
+import { log, tryBigInt, makeLock, provider, startBlock, genesisTime,
          secondsPerSlot, slotsPerEpoch, networkName, socketPath } from './lib.js'
 
 const dbDir = process.env.DB_DIR || 'db'
 const db = new PouchDB(dbDir)
+
+const writeLocks = new Map()
+const writeLocksLock = makeLock()
 
 const bigIntPrefix = 'BI:'
 const numberPrefix = 'N:'
@@ -124,15 +127,27 @@ async function getCommittees(epochIndex) {
 async function cachedCall(contract, fn, args, blockTag) {
   const address = await contract.getAddress()
   const key = `/${networkName}/${blockTag.toString()}/${address}/${fn}/${args.map(a => a.toString()).join()}`
-  return await db.get(key)
-    .then(
-      doc => deserialise(doc.value),
-      async err => {
-        const result = await contract[fn](...args, {blockTag})
-        await db.put({_id: key, value: serialise(result)})
-        return result
-      }
-    )
+  const writeLock = await writeLocksLock(() => {
+    if (!writeLocks.has(key)) writeLocks.set(key, {refs: 0, lock: makeLock()})
+    const writeLock = writeLocks.get(key)
+    writeLock.refs++
+    return writeLock
+  })
+  return await writeLock.lock(async () => {
+    const result = await db.get(key)
+      .then(
+        doc => deserialise(doc.value),
+        async err => {
+          const result = await contract[fn](...args, {blockTag})
+          await db.put({_id: key, value: serialise(result)})
+          return result
+        }
+      )
+    writeLock.refs--
+    if (!writeLock.refs)
+      await writeLocksLock(() => writeLocks.delete(key))
+    return result
+  })
 }
 
 async function getBlockNumberFromSlot(slotNumber) {
@@ -393,7 +408,6 @@ const server = createServer({allowHalfOpen: true, noDelay: true}, socket => {
       socket.end('invalid request')
   })
 })
-log(2, 'starting socket server')
 server.listen(socketPath)
 process.on('SIGINT', () => { unlinkSync(socketPath); process.exit() })
 process.on('uncaughtExceptionMonitor', () => unlinkSync(socketPath))
