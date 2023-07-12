@@ -197,25 +197,28 @@ const possiblyEligibleMinipoolIndexArray = new BigUint64Array(
 import { Worker } from 'node:worker_threads'
 const NUM_WORKERS = parseInt(process.env.NUM_WORKERS) || 12
 
-const smoothingWorkers = Array.from(Array(NUM_WORKERS).keys()).map(i => {
-  const data = {
-    worker: new Worker('./smoothing.js', {workerData: possiblyEligibleMinipoolIndexArray}),
-    promise: i,
-    resolveWhenReady: null
-  }
-  data.worker.on('message', () => {
-    if (typeof data.resolveWhenReady == 'function')
-      data.resolveWhenReady(i)
+const makeWorkers = path =>
+  Array.from(Array(NUM_WORKERS).keys()).map(i => {
+    const data = {
+      worker: new Worker(path, {workerData: possiblyEligibleMinipoolIndexArray}),
+      promise: i,
+      resolveWhenReady: null
+    }
+    data.worker.on('message', () => {
+      if (typeof data.resolveWhenReady == 'function')
+        data.resolveWhenReady(i)
+    })
+    return data
   })
-  return data
-})
+
+const smoothingWorkers = makeWorkers('./smoothing.js')
 
 async function getWorker(workers) {
   const i = await Promise.any(workers.map(data => data.promise))
   workers[i].promise = new Promise(resolve => {
     workers[i].resolveWhenReady = resolve
   })
-  return [workers[i].worker, i]
+  return workers[i].worker
 }
 
 for (const i of nodeIndices) {
@@ -223,7 +226,7 @@ for (const i of nodeIndices) {
   if (left % 10 == 0)
     log(3, `${left} nodes left to process smoothing`)
   const nodeAddress = nodeAddresses[i]
-  const [worker] = await getWorker(smoothingWorkers)
+  const worker = await getWorker(smoothingWorkers)
   worker.postMessage({i, nodeAddress})
 }
 
@@ -232,46 +235,7 @@ smoothingWorkers.forEach(data => data.worker.postMessage('exit'))
 
 log(3, `${possiblyEligibleMinipoolIndexArray[0]} eligible minipools`)
 
-const rocketPoolDuties = new Map()
-const dutiesLock = makeLock()
-
-const dutiesWorkers = Array.from(Array(NUM_WORKERS).keys()).map(w => {
-  const data = {
-    worker: new Worker('./duties.js', {workerData: possiblyEligibleMinipoolIndexArray}),
-    promise: w,
-    resolveWhenReady: null
-  }
-  data.worker.on('message', async (message) => {
-    if (message === 'done') {
-      await socketCall(['duties', data.epoch, data.duties.join()])
-      if (typeof data.resolveWhenReady == 'function')
-        data.resolveWhenReady(w)
-      return
-    }
-    let i = 0
-    while (i < message.length) {
-      const slotIndex = message[i++]
-      const committeeIndex = message[i++]
-      const minipoolScore64s = []
-      for (const _ of Array(4)) minipoolScore64s.push(message[i++])
-      const minipoolScore = uint64sTo256(minipoolScore64s)
-      const position = message[i++]
-      const minipoolAddress64s = []
-      for (const _ of Array(3)) minipoolAddress64s.push(message[i++])
-      const minipoolAddress = uint64sToAddress(minipoolAddress64s)
-      const dutyKey = `${slotIndex},${committeeIndex}`
-      data.duties.push(slotIndex.toString(), committeeIndex.toString(), minipoolAddress, position.toString(), minipoolScore.toString())
-      await dutiesLock(() => {
-        if (!rocketPoolDuties.has(dutyKey))
-          rocketPoolDuties.set(dutyKey, [])
-        rocketPoolDuties.get(dutyKey).push(
-          {minipoolAddress, position, minipoolScore}
-        )
-      })
-    }
-  })
-  return data
-})
+const dutiesWorkers = makeWorkers('./duties.js')
 
 const intervalEpochsToGetDuties = Array.from(
   Array(parseInt(targetSlotEpoch - bnStartEpoch + 1n)).keys())
@@ -283,24 +247,11 @@ const timestamp = () => Intl.DateTimeFormat('en-GB',
 
 while (intervalEpochsToGetDuties.length) {
   if (intervalEpochsToGetDuties.length % 10 == 0)
-    log(3, `${timestamp()}: ${intervalEpochsToGetDuties.length} epochs left to get duties (got ${rocketPoolDuties.size} so far)`)
-  const epoch = intervalEpochsToGetDuties.shift().toString()
-  if (await socketCall(['duties', epoch, 'check'])) {
-    const duties = await socketCall(['duties', epoch]).then(s => s.split(','))
-    while (duties.length) {
-      const [slotIndex, committeeIndex, minipoolAddress] = duties.splice(0, 3)
-      const position = BigInt(duties.shift())
-      const minipoolScore = BigInt(duties.shift())
-      const dutyKey = `${slotIndex},${committeeIndex}`
-      if (!rocketPoolDuties.has(dutyKey)) rocketPoolDuties.set(dutyKey, [])
-      rocketPoolDuties.get(dutyKey).push({minipoolAddress, position, minipoolScore})
-    }
-    continue
-  }
-  const [worker, i] = await getWorker(dutiesWorkers)
-  dutiesWorkers[i].epoch = epoch
-  dutiesWorkers[i].duties = []
-  worker.postMessage(epoch)
+    log(3, `${timestamp()}: ${intervalEpochsToGetDuties.length} epochs left to get duties`)
+  const epochIndex = intervalEpochsToGetDuties.shift().toString()
+  if (await socketCall(['duties', epochIndex, 'check'])) continue
+  const worker = await getWorker(dutiesWorkers)
+  worker.postMessage(epochIndex)
 }
 
 await Promise.all(dutiesWorkers.map(data => data.promise))

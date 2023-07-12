@@ -1,6 +1,6 @@
 import { ethers } from 'ethers'
 import { uint64sToAddress, addressToUint64s, uint256To64s, genesisTime, secondsPerSlot,
-         cachedCall, socketCall } from './lib.js'
+         cachedCall, socketCall, log } from './lib.js'
 import { parentPort, workerData, threadId } from 'node:worker_threads'
 
 const possiblyEligibleMinipools = new Map()
@@ -28,27 +28,17 @@ async function getNodeSmoothingTimes(nodeAddress) {
   return value
 }
 
-const eltsPerDuty = 1 + 1 + 1 + 4 + 3
-const estimatedDutiesPerCommittee = 3
-const numCommitteesPerBatch = process.env.BATCH_SIZE || 1024
-
 async function processCommittees(epochIndex) {
+  const duties = []
   const committees = JSON.parse(await socketCall(['beacon', 'getCommittees', epochIndex]))
-
-  const maxByteLength = BigUint64Array.BYTES_PER_ELEMENT *
-                        eltsPerDuty * estimatedDutiesPerCommittee *
-                        Math.min(numCommitteesPerBatch, committees.length)
-  let dutiesToReturn = new BigUint64Array(new ArrayBuffer(0, {maxByteLength}))
-  function postDuties() {
-    parentPort.postMessage(dutiesToReturn, [dutiesToReturn.buffer])
-    dutiesToReturn = new BigUint64Array(new ArrayBuffer(0, {maxByteLength}))
-  }
-  let numDuties = 0
-
+  log(3, `${threadId} processing ${committees.length} committees for ${epochIndex}`)
   for (const committee of committees) {
     const slotIndex = BigInt(committee.slot)
     const committeeIndex = BigInt(committee.index)
     const blockTime = genesisTime + secondsPerSlot * slotIndex
+    duties.push(slotIndex.toString(), committeeIndex.toString())
+    const lengthIndex = duties.length
+    duties.push(0)
     for (const [position, validatorIndexStr] of committee.validators.entries()) {
       const validatorIndex = parseInt(validatorIndexStr)
       if (!possiblyEligibleMinipools.has(validatorIndex)) continue
@@ -69,20 +59,15 @@ async function processCommittees(epochIndex) {
                           {bond: previousBond, fee: previousFee} :
                           {bond: currentBond, fee: currentFee}
       const minipoolScore = (BigInt(1e18) - fee) * bond / BigInt(32e18) + fee
-      let newByteLength = dutiesToReturn.byteLength + eltsPerDuty * BigUint64Array.BYTES_PER_ELEMENT
-      if (newByteLength >= maxByteLength) {
-        newByteLength -= dutiesToReturn.byteLength
-        postDuties()
-        numDuties = 0
-      }
-      dutiesToReturn.buffer.resize(newByteLength)
-      dutiesToReturn.set([slotIndex, committeeIndex, BigInt(position),
-                          ...uint256To64s(minipoolScore),
-                          ...addressToUint64s(minipoolAddress)],
-                         eltsPerDuty * numDuties++)
+      duties[lengthIndex]++
+      duties.push(minipoolAddress, position.toString(), minipoolScore.toString())
     }
+    if (duties[lengthIndex])
+      duties[lengthIndex] = duties[lengthIndex].toString()
+    else
+      duties.splice(-3, 3)
   }
-  postDuties()
+  await socketCall(['duties', epochIndex, duties.join()])
 }
 
 parentPort.on('message', async (msg) => {
