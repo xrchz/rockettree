@@ -257,4 +257,65 @@ while (intervalEpochsToGetDuties.length) {
 await Promise.all(dutiesWorkers.map(data => data.promise))
 dutiesWorkers.forEach(data => data.worker.postMessage('exit'))
 
-log(3, `Got ${rocketPoolDuties.size} minipool duties`)
+const minipoolScores = new Map()
+let totalMinpoolScore = 0n
+const minipoolScoreLock = makeLock()
+
+const attestationWorkers = Array.from(Array(NUM_WORKERS).keys()).map(w => {
+  const data = {
+    worker: new Worker('./attestations.js'),
+    promise: w,
+    resolveWhenReady: null
+  }
+  data.worker.on('message', async msg => {
+    let i = 0
+    while (i * 7 < msg.length) {
+      const minipoolAddress = uint64sToAddress(Array.from(msg.subarray(i * 7, i * 7 + 3)))
+      const minipoolScoreInc = uint64sTo256(Array.from(msg.subarray(i * 7 + 3, ++i * 7)))
+      await minipoolScoreLock(() => {
+        const oldScore = minipoolScores.has(minipoolAddress) ?
+                         minipoolScores.get(minipoolAddress) : 0n
+        minipoolScores.set(minipoolAddress, oldScore + minipoolScoreInc)
+        totalMinpoolScore += minipoolScoreInc
+      })
+    }
+    if (typeof data.resolveWhenReady == 'function')
+      data.resolveWhenReady(w)
+  })
+  return data
+})
+
+const epochsToCheckForAttestations = Array.from(
+  Array(parseInt(targetSlotEpoch + 1n - bnStartEpoch + 1n)).keys())
+.map(i => bnStartEpoch + BigInt(i))
+
+while (epochsToCheckForAttestations.length) {
+  if (epochsToCheckForAttestations.length % 10 == 0)
+    log(3, `${timestamp()}: ${epochsToCheckForAttestations.length} epochs left to check for attestations`)
+  const epochToCheck = epochsToCheckForAttestations.shift()
+  const worker = await getWorker(attestationWorkers)
+  worker.postMessage(epochToCheck)
+}
+
+await Promise.all(attestationWorkers.map(data => data.promise))
+attestationWorkers.forEach(data => data.worker.postMessage('exit'))
+
+const nodeRewards = new Map()
+function addNodeReward(nodeAddress, token, amount) {
+  if (!amount) return
+  if (!nodeRewards.has(nodeAddress)) nodeRewards.set(nodeAddress, {ETH: 0n, RPL: 0n})
+  nodeRewards.get(nodeAddress)[token] += amount
+}
+nodeCollateralAmounts.forEach((v, k) => addNodeReward(k, 'RPL', v))
+oDaoAmounts.forEach((v, k) => addNodeReward(k, 'RPL', v))
+
+function nodeMetadataHash(nodeAddress, totalRPL, totalETH) {
+  const data = new Uint8Array(20 + 32 + 32 + 32)
+  data.set(ethers.getBytes(nodeAddress), 0)
+  data.fill(0, 20, 20 + 32)
+  const RPLuint8s = ethers.toBeArray(totalRPL)
+  const ETHuint8s = ethers.toBeArray(totalETH)
+  data.set(RPLuint8s, 20 + 32 + (32 - RPLuint8s.length))
+  data.set(ETHuint8s, 20 + 32 + 32 + (32 - ETHuint8s.length))
+  return ethers.keccak256(data)
+}

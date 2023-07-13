@@ -395,6 +395,8 @@ const server = createServer({allowHalfOpen: true, noDelay: true}, socket => {
         socket.end((await getIndexFromPubkey(splits[2])).toString())
       else if (splits[1] == 'getCommittees')
         socket.end(JSON.stringify(await getCommittees(splits[2])))
+      else if (splits[1] == 'checkSlotExists')
+        socket.end((await checkSlotExists(splits[2])) ? 't' : '')
       else
         socket.end(`invalid request: unknown beacon request ${splits[1]}`)
     }
