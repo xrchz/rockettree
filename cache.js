@@ -48,13 +48,13 @@ async function cachedBeacon(path, result) {
   else await db.put({_id: key, value: serialise(result)})
 }
 
-async function cachedDuties(epoch, duties) {
-  const key = `/${networkName}/duties/${epoch}`
-  if (duties) {
-    if (duties === 'check')
+async function cachedData(name, epoch, data) {
+  const key = `/${networkName}/${name}/${epoch}`
+  if (data) {
+    if (data === 'check')
       return await db.allDocs({key}).then(result => result.rows.length)
     else
-      await db.put({_id: key, value: duties})
+      await db.put({_id: key, value: data})
   }
   else
     return await db.get(key).then(doc => doc.value)
@@ -406,12 +406,12 @@ const server = createServer({allowHalfOpen: true, noDelay: true}, socket => {
       await nodeSmoothingTimes(splits[1], targetElBlock, {optInTime: splits[2], optOutTime: splits[3]})
       socket.end('success')
     }
-    else if (splits.length == 3 && splits[0] == 'duties' && splits[2] == 'check')
-      socket.end((await cachedDuties(splits[1], splits[2])) ? 't' : '')
-    else if (splits.length == 3 && splits[0] == 'duties')
-      socket.end(await cachedDuties(splits[1], splits[2]))
-    else if (splits.length == 2 && splits[0] == 'duties')
-      socket.end(await cachedDuties(splits[1]))
+    else if (splits.length == 3 && ['duties', 'attestations'].includes(splits[0]) && splits[2] == 'check')
+      socket.end((await cachedData(splits[0], splits[1], splits[2])) ? 't' : '')
+    else if (splits.length == 3 && ['duties', 'attestations'].includes(splits[0]))
+      socket.end(await cachedData(splits[0], splits[1], splits[2]))
+    else if (splits.length == 2 && ['duties', 'attestations'].includes(splits[0]))
+      socket.end(await cachedData(splits[0], splits[1]))
     else if (splits.length == 2 && splits[0] == 'nodeSmoothingTimes')
       socket.end(JSON.stringify(await nodeSmoothingTimes(splits[1], targetElBlock)))
     else if (splits.length == 1 && splits[0] == 'ExecutionBlock')

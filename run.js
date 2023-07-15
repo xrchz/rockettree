@@ -197,10 +197,10 @@ const possiblyEligibleMinipoolIndexArray = new BigUint64Array(
 import { Worker } from 'node:worker_threads'
 const NUM_WORKERS = parseInt(process.env.NUM_WORKERS) || 12
 
-const makeWorkers = path =>
+const makeWorkers = (path, workerData) =>
   Array.from(Array(NUM_WORKERS).keys()).map(i => {
     const data = {
-      worker: new Worker(path, {workerData: possiblyEligibleMinipoolIndexArray}),
+      worker: new Worker(path, {workerData}),
       promise: i,
       resolveWhenReady: null
     }
@@ -211,7 +211,7 @@ const makeWorkers = path =>
     return data
   })
 
-const smoothingWorkers = makeWorkers('./smoothing.js')
+const smoothingWorkers = makeWorkers('./smoothing.js', possiblyEligibleMinipoolIndexArray)
 
 async function getWorker(workers) {
   const i = await Promise.any(workers.map(data => data.promise))
@@ -235,7 +235,7 @@ smoothingWorkers.forEach(data => data.worker.postMessage('exit'))
 
 log(3, `${possiblyEligibleMinipoolIndexArray[0]} eligible minipools`)
 
-const dutiesWorkers = makeWorkers('./duties.js')
+const dutiesWorkers = makeWorkers('./duties.js', possiblyEligibleMinipoolIndexArray)
 
 const intervalEpochsToGetDuties = Array.from(
   Array(parseInt(targetSlotEpoch - bnStartEpoch + 1n)).keys())
@@ -257,42 +257,18 @@ while (intervalEpochsToGetDuties.length) {
 await Promise.all(dutiesWorkers.map(data => data.promise))
 dutiesWorkers.forEach(data => data.worker.postMessage('exit'))
 
-const minipoolScores = new Map()
-let totalMinpoolScore = 0n
-const minipoolScoreLock = makeLock()
-
-const attestationWorkers = Array.from(Array(NUM_WORKERS).keys()).map(w => {
-  const data = {
-    worker: new Worker('./attestations.js'),
-    promise: w,
-    resolveWhenReady: null
-  }
-  data.worker.on('message', async msg => {
-    let i = 0
-    while (i * 7 < msg.length) {
-      const minipoolAddress = uint64sToAddress(Array.from(msg.subarray(i * 7, i * 7 + 3)))
-      const minipoolScoreInc = uint64sTo256(Array.from(msg.subarray(i * 7 + 3, ++i * 7)))
-      await minipoolScoreLock(() => {
-        const oldScore = minipoolScores.has(minipoolAddress) ?
-                         minipoolScores.get(minipoolAddress) : 0n
-        minipoolScores.set(minipoolAddress, oldScore + minipoolScoreInc)
-        totalMinpoolScore += minipoolScoreInc
-      })
-    }
-    if (typeof data.resolveWhenReady == 'function')
-      data.resolveWhenReady(w)
-  })
-  return data
-})
+const attestationWorkers = makeWorkers('./attestations.js')
 
 const epochsToCheckForAttestations = Array.from(
   Array(parseInt(targetSlotEpoch + 1n - bnStartEpoch + 1n)).keys())
 .map(i => bnStartEpoch + BigInt(i))
+const epochsToCollectAttestations = Array.from(epochsToCheckForAttestations)
 
 while (epochsToCheckForAttestations.length) {
   if (epochsToCheckForAttestations.length % 10 == 0)
     log(3, `${timestamp()}: ${epochsToCheckForAttestations.length} epochs left to check for attestations`)
-  const epochToCheck = epochsToCheckForAttestations.shift()
+  const epochToCheck = epochsToCheckForAttestations.shift().toString()
+  if (await socketCall(['attestations', epochToCheck, 'check'])) continue
   const worker = await getWorker(attestationWorkers)
   worker.postMessage(epochToCheck)
 }
