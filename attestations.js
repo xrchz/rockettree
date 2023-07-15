@@ -21,7 +21,8 @@ async function processSlot(epochToCheck) {
   }
   if (await socketCall(['duties', prevEpochIndex.toString(), 'check']))
     await addDuties(prevEpochIndex.toString())
-  await addDuties(epochIndex.toString())
+  if (await socketCall(['duties', epochIndex.toString(), 'check']))
+    await addDuties(epochIndex.toString())
 
   const minipoolScores = new Map()
 
