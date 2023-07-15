@@ -276,6 +276,30 @@ while (epochsToCheckForAttestations.length) {
 await Promise.all(attestationWorkers.map(data => data.promise))
 attestationWorkers.forEach(data => data.worker.postMessage('exit'))
 
+const minipoolScores = new Map()
+let totalMinpoolScore = 0n
+let successfulAttestations = 0n
+
+while (epochsToCollectAttestations.length) {
+  if (epochsToCollectAttestations.length % 10 == 0)
+    log(3, `${timestamp()}: ${epochsToCollectAttestations.length} epochs left to collect attestations`)
+  const epoch = epochsToCollectAttestations.shift().toString()
+  const value = await socketCall(['attestations', epoch]).then(s => s.split(','))
+  const [successfulAttestationsInc, minipoolCount] = value.splice(0, 2)
+  successfulAttestations += BigInt(successfulAttestationsInc)
+  Array(parseInt(minipoolCount)).fill().forEach(() => {
+    const minipoolAddress = value.shift()
+    const minipoolScoreInc = BigInt(value.shift())
+    const oldScore = minipoolScores.has(minipoolAddress) ?
+      minipoolScores.get(minipoolAddress) : 0n
+    minipoolScores.set(minipoolAddress, oldScore + minipoolScoreInc)
+    totalMinpoolScore += minipoolScoreInc
+  })
+}
+
+log(3, `successfulAttestations: ${successfulAttestations}`)
+log(3, `totalMinpoolScore: ${totalMinpoolScore}`)
+
 const nodeRewards = new Map()
 function addNodeReward(nodeAddress, token, amount) {
   if (!amount) return
@@ -284,6 +308,20 @@ function addNodeReward(nodeAddress, token, amount) {
 }
 nodeCollateralAmounts.forEach((v, k) => addNodeReward(k, 'RPL', v))
 oDaoAmounts.forEach((v, k) => addNodeReward(k, 'RPL', v))
+
+const smoothingPoolBalance = BigInt(await socketCall(['smoothingPoolBalance']))
+const totalNodeOpShare = smoothingPoolBalance * totalMinpoolScore / (successfulAttestations * _100Percent)
+let totalEthForMinipools = 0n
+
+log(3, `totalNodeOpShare: ${totalNodeOpShare}`)
+
+for (const [minipoolAddress, minipoolScore] of minipoolScores.entries()) {
+  const minipoolEth = totalNodeOpShare * minipoolScore / totalMinpoolScore
+  addNodeReward(await cachedCall(minipoolAddress, 'getNodeAddress', [], 'finalized'), 'ETH', minipoolEth)
+  totalEthForMinipools += minipoolEth
+}
+
+log(2, `totalEthForMinipools: ${totalEthForMinipools}`)
 
 function nodeMetadataHash(nodeAddress, totalRPL, totalETH) {
   const data = new Uint8Array(20 + 32 + 32 + 32)
@@ -295,3 +333,26 @@ function nodeMetadataHash(nodeAddress, totalRPL, totalETH) {
   data.set(ETHuint8s, 20 + 32 + 32 + (32 - ETHuint8s.length))
   return ethers.keccak256(data)
 }
+
+const nodeHashes = new Map()
+nodeRewards.forEach(({ETH, RPL}, nodeAddress) => {
+  if (0 < ETH || 0 < RPL)
+    nodeHashes.set(nodeAddress, nodeMetadataHash(nodeAddress, RPL, ETH))
+})
+const nullHash = ethers.hexlify(new Uint8Array(32))
+const leafValues = Array.from(nodeHashes.values()).sort()
+const rowHashes = leafValues.concat(
+  Array(Math.pow(2, Math.ceil(Math.log2(leafValues.length)))
+        - leafValues.length).fill(nullHash))
+log(3, `number of leaves: ${leafValues.length} (${rowHashes.length} with nulls)`)
+while (rowHashes.length > 1) {
+  let i = 0
+  while (i < rowHashes.length) {
+    const [left, right] = rowHashes.slice(i, i + 2).sort()
+    const branch = new Uint8Array(64)
+    branch.set(ethers.getBytes(left), 0)
+    branch.set(ethers.getBytes(right), 32)
+    rowHashes.splice(i++, 2, ethers.keccak256(branch))
+  }
+}
+log(1, `merkle root: ${rowHashes}`)

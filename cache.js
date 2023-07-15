@@ -183,7 +183,8 @@ const getMinipool = (addr) =>
      'function getStatusTime() view returns (uint256)',
      'function getUserDepositBalance() view returns (uint256)',
      'function getNodeDepositBalance() view returns (uint256)',
-     'function getNodeFee() view returns (uint256)'
+     'function getNodeFee() view returns (uint256)',
+     'function getNodeAddress() view returns (address)'
     ],
     provider)
 
@@ -424,6 +425,8 @@ const server = createServer({allowHalfOpen: true, noDelay: true}, socket => {
       socket.end(targetSlotEpoch.toString())
     else if (splits.length == 1 && splits[0] == 'intervalTime')
       socket.end(intervalTime.toString())
+    else if (splits.length == 1 && splits[0] == 'smoothingPoolBalance')
+      socket.end(smoothingPoolBalance.toString())
     else
       socket.end('invalid request')
   })
