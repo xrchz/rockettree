@@ -102,7 +102,8 @@ async function processNodeRPL(i) {
 const numberOfMinipools = BigInt(
   await cachedCall('rocketMinipoolManager', 'getMinipoolCount', [], 'targetElBlock'))
 
-if (!process.env.SKIP_RPL) {
+const nodeCollateralAmounts = new Map()
+let totalCalculatedCollateralRewards = 0n
 
 const nodeIndicesToProcessRPL = nodeIndices.slice()
 while (nodeIndicesToProcessRPL.length) {
@@ -114,8 +115,7 @@ while (nodeIndicesToProcessRPL.length) {
 }
 log(1, `totalEffectiveRplStake: ${totalEffectiveRplStake}`)
 
-const nodeCollateralAmounts = new Map()
-let totalCalculatedCollateralRewards = 0n
+
 for (const nodeAddress of nodeAddresses) {
   const nodeEffectiveStake = nodeEffectiveStakes.get(nodeAddress)
   const nodeCollateralAmount = collateralRewards * nodeEffectiveStake / totalEffectiveRplStake
@@ -170,7 +170,6 @@ const actualPDaoRewards = pendingRewards - totalCalculatedCollateralRewards - to
 log(1, `actualPDaoRewards: ${actualPDaoRewards}`)
 log(3, `pDAO rewards delta: ${actualPDaoRewards - pDaoRewards}`)
 
-} // SKIP_RPL
 
 if (currentIndex == 0) process.exit()
 
