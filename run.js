@@ -341,11 +341,19 @@ function nodeMetadataHash(nodeAddress, totalRPL, totalETH) {
   return ethers.keccak256(data)
 }
 
+const nodeRewardsObject = {}
 const nodeHashes = new Map()
 nodeRewards.forEach(({ETH, RPL}, nodeAddress) => {
-  if (0 < ETH || 0 < RPL)
+  if (0 < ETH || 0 < RPL) {
     nodeHashes.set(nodeAddress, nodeMetadataHash(nodeAddress, RPL, ETH))
+    nodeRewardsObject[nodeAddress] = {ETH, RPL}
+  }
 })
+import { writeFileSync } from 'node:fs'
+writeFileSync('node-rewards.json',
+  JSON.stringify(nodeRewardsObject,
+    (key, value) => typeof value === 'bigint' ? value.toString() : value))
+
 const nullHash = ethers.hexlify(new Uint8Array(32))
 const leafValues = Array.from(nodeHashes.values()).sort()
 const rowHashes = leafValues.concat(
