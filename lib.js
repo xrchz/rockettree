@@ -5,7 +5,12 @@ import { createConnection } from 'node:net'
 export const socketPath = process.env.SOCKET || '/tmp/rockettree.ipc'
 
 export function socketCall(request) {
-  const socket = createConnection({path: socketPath, allowHalfOpen: true, noDelay: true})
+  let socket
+  socket = createConnection({path: socketPath, allowHalfOpen: true, noDelay: true})
+  socket.on('error', (e) => {
+    if (e.code !== 'EAGAIN') throw e
+    else console.log('socket error: eagain')
+  })
   socket.setEncoding('utf8')
   const data = []
   socket.on('data', (d) => data.push(d))
