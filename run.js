@@ -277,6 +277,7 @@ await Promise.all(attestationWorkers.map(data => data.promise))
 attestationWorkers.forEach(data => data.worker.postMessage('exit'))
 
 const minipoolScores = new Map()
+const minipoolAttestations = new Map()
 let totalMinpoolScore = 0n
 let successfulAttestations = 0n
 
@@ -285,16 +286,23 @@ while (epochsToCollectAttestations.length) {
     log(3, `${timestamp()}: ${epochsToCollectAttestations.length} epochs left to collect attestations`)
   const epoch = epochsToCollectAttestations.shift().toString()
   const value = await socketCall(['attestations', epoch]).then(s => s.split(','))
-  const [successfulAttestationsInc, minipoolCount] = value.splice(0, 2)
-  successfulAttestations += BigInt(successfulAttestationsInc)
-  Array(parseInt(minipoolCount)).fill().forEach(() => {
-    const minipoolAddress = value.shift()
-    const minipoolScoreInc = BigInt(value.shift())
-    const oldScore = minipoolScores.has(minipoolAddress) ?
-      minipoolScores.get(minipoolAddress) : 0n
-    minipoolScores.set(minipoolAddress, oldScore + minipoolScoreInc)
-    totalMinpoolScore += minipoolScoreInc
-  })
+  while (value.length) {
+    const [minipoolAddress, scoresLength] = value.splice(0, 2)
+    if (!minipoolAttestations.has(minipoolAddress)) minipoolAttestations.set(minipoolAddress, new Set())
+    const slots = minipoolAttestations.get(minipoolAddress)
+    Array(parseInt(scoresLength)).fill().forEach(() => {
+      const [slotIndex, scoreStr] = value.splice(0, 2)
+      if (!slots.has(slotIndex)) {
+        slots.add(slotIndex)
+        const scoreInc = BigInt(scoreStr)
+        const oldScore = minipoolScores.has(minipoolAddress) ?
+          minipoolScores.get(minipoolAddress) : 0n
+        minipoolScores.set(minipoolAddress, oldScore + scoreInc)
+        totalMinpoolScore += scoreInc
+        successfulAttestations++
+      }
+    })
+  }
 }
 
 log(3, `successfulAttestations: ${successfulAttestations}`)
