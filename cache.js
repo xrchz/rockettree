@@ -372,6 +372,8 @@ const RewardSubmission = previousIntervalEvent.args[1]
 const ExecutionBlock = RewardSubmission[1]
 const ConsensusBlock = RewardSubmission[2]
 
+const dataKeys = ['duties', 'attestations']
+
 const server = createServer({allowHalfOpen: true, noDelay: true}, socket => {
   socket.setEncoding('utf8')
   const data = []
@@ -407,11 +409,11 @@ const server = createServer({allowHalfOpen: true, noDelay: true}, socket => {
       await nodeSmoothingTimes(splits[1], targetElBlock, {optInTime: splits[2], optOutTime: splits[3]})
       socket.end('success')
     }
-    else if (splits.length == 3 && ['duties', 'attestations'].includes(splits[0]) && splits[2] == 'check')
+    else if (splits.length == 3 && dataKeys.includes(splits[0]) && splits[2] == 'check')
       socket.end((await cachedData(splits[0], splits[1], splits[2])) ? 't' : '')
-    else if (splits.length == 3 && ['duties', 'attestations'].includes(splits[0]))
+    else if (splits.length == 3 && dataKeys.includes(splits[0]))
       socket.end(await cachedData(splits[0], splits[1], splits[2]))
-    else if (splits.length == 2 && ['duties', 'attestations'].includes(splits[0]))
+    else if (splits.length == 2 && dataKeys.includes(splits[0]))
       socket.end(await cachedData(splits[0], splits[1]))
     else if (splits.length == 2 && splits[0] == 'nodeSmoothingTimes')
       socket.end(JSON.stringify(await nodeSmoothingTimes(splits[1], targetElBlock)))
