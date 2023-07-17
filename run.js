@@ -178,14 +178,6 @@ const ConsensusBlock = BigInt(await socketCall(['ConsensusBlock']))
 
 const bnStartEpoch = tryBigInt(process.env.OVERRIDE_START_EPOCH) || ConsensusBlock / slotsPerEpoch + 1n
 log(2, `bnStartEpoch: ${bnStartEpoch}`)
-/*
- * TODO: so far unused?
-let bnStartBlock = bnStartEpoch * slotsPerEpoch
-while (!(await checkSlotExists(bnStartBlock))) bnStartBlock++
-log(2, `bnStartBlock: ${bnStartBlock}`)
-const elStartBlock = await getBlockNumberFromSlot(bnStartBlock)
-log(2, `elStartBlock: ${elStartBlock}`)
-*/
 
 const possiblyEligibleMinipoolIndexArray = new BigUint64Array(
   new SharedArrayBuffer(
