@@ -47,14 +47,14 @@ async function processCommittees(epochIndex) {
       if (blockTime < optInTime || blockTime > optOutTime) continue
       const statusTime = BigInt(await cachedCall(minipoolAddress, 'getStatusTime', [], 'finalized'))
       if (blockTime < statusTime) continue
-      const currentBond = BigInt(await cachedCall(minipoolAddress, 'getNodeDepositBalance', [], 'finalized'))
-      const currentFee = BigInt(await cachedCall(minipoolAddress, 'getNodeFee', [], 'finalized'))
+      const currentBond = BigInt(await cachedCall(minipoolAddress, 'getNodeDepositBalance', [], 'targetElBlock'))
+      const currentFee = BigInt(await cachedCall(minipoolAddress, 'getNodeFee', [], 'targetElBlock'))
       const previousBond = BigInt(await cachedCall(
-        'rocketMinipoolBondReducer', 'getLastBondReductionPrevValue', [minipoolAddress], 'finalized'))
+        'rocketMinipoolBondReducer', 'getLastBondReductionPrevValue', [minipoolAddress], 'targetElBlock'))
       const previousFee = BigInt(await cachedCall(
-        'rocketMinipoolBondReducer', 'getLastBondReductionPrevNodeFee', [minipoolAddress], 'finalized'))
+        'rocketMinipoolBondReducer', 'getLastBondReductionPrevNodeFee', [minipoolAddress], 'targetElBlock'))
       const lastReduceTime = BigInt(await cachedCall(
-        'rocketMinipoolBondReducer', 'getLastBondReductionTime', [minipoolAddress], 'finalized'))
+        'rocketMinipoolBondReducer', 'getLastBondReductionTime', [minipoolAddress], 'targetElBlock'))
       const {bond, fee} = lastReduceTime > 0 && lastReduceTime > blockTime ?
                           {bond: previousBond, fee: previousFee} :
                           {bond: currentBond, fee: currentFee}
