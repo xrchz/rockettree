@@ -2,6 +2,22 @@ import PouchDB from 'pouchdb-node'
 const dryRun = true
 const dbDir = process.env.DB_DIR || 'db'
 const db = new PouchDB(dbDir)
+const prefix = '/mainnet/17433555/'
+// const prefix = '/mainnet/17433555/0x6d010C43d4e96D74C422f2e27370AF48711B49bF/getNodeMinipoolAt/'
+// const prefix = '/mainnet/17433555/0xb8e783882b11Ff4f6Cef3C501EA0f4b960152cc9/getMemberJoinedTime/'
+let result = await db.allDocs({startkey: prefix, endkey: `${prefix}\ufff0`})
+for (const row of result.rows) {
+  if (row.id.includes('finalized')) continue
+  if (!(row.id.includes('getStatusTime'))) continue
+  if (dryRun)
+    console.log(`Would delete ${row.id} ${row.value.rev}`)
+  else {
+    console.log(`Deleting ${row.id} ${row.value.rev}`)
+    await db.remove(row.id, row.value.rev).catch(err =>
+      console.error(`Got ${err} when deleting ${row.id} ${row.value.rev}`))
+  }
+}
+
 /*
 const epoch = '206725'
 let prefix = `/mainnet/duties/${epoch}`
@@ -30,18 +46,18 @@ for (const row of result.rows) {
 // await db.info().then(res => console.log(`Got db info ${JSON.stringify(res)}`))
 // await db.compact()
 // const prefix = '/mainnet/minipoolAttestations'
-const prefix = '/mainnet/attestations'
+// const prefix = '/mainnet/attestations'
 // const result = await db.allDocs({startkey: prefix, endkey: `${prefix}\ufff0`, include_docs: true})
-const result = await db.allDocs({startkey: prefix, endkey: `${prefix}\ufff0`})
-for (const row of result.rows) {
-  if (dryRun)
-    console.log(`Would delete ${row.id} ${row.value.rev}`)
-  else {
-    console.log(`Deleting ${row.id} ${row.value.rev}`)
-    await db.remove(row.id, row.value.rev).catch(err =>
-      console.error(`Got ${err} when deleting ${row.id} ${row.value.rev}`))
-  }
-}
+// const result = await db.allDocs({startkey: prefix, endkey: `${prefix}\ufff0`})
+// for (const row of result.rows) {
+//   if (dryRun)
+//     console.log(`Would delete ${row.id} ${row.value.rev}`)
+//   else {
+//     console.log(`Deleting ${row.id} ${row.value.rev}`)
+//     await db.remove(row.id, row.value.rev).catch(err =>
+//       console.error(`Got ${err} when deleting ${row.id} ${row.value.rev}`))
+//   }
+// }
 /*
 for (const row of result.rows) {
   if (dryRun) {
