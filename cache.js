@@ -50,7 +50,7 @@ async function cachedBeacon(path, result) {
 
 async function cachedData(name, epoch, data) {
   const key = `/${networkName}/${name}/${epoch}`
-  if (data) {
+  if (typeof data != 'undefined') {
     if (data === 'check')
       return await db.allDocs({key}).then(result => result.rows.length)
     else
