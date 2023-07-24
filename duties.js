@@ -7,13 +7,10 @@ const possiblyEligibleMinipools = new Map()
 let i = 0
 const possiblyEligibleMinipoolIndices = workerData[0]
 while (i < possiblyEligibleMinipoolIndices) {
-  const [index, nodeAddress0, nodeAddress1, nodeAddress2,
-         minipoolAddress0, minipoolAddress1, minipoolAddress2] =
-    workerData.slice(1 + (1 + 3 + 3) * i, 1 + (1 + 3 + 3) * ++i)
-  possiblyEligibleMinipools.set(parseInt(index), {
-    nodeAddress: uint64sToAddress([nodeAddress0, nodeAddress1, nodeAddress2]),
-    minipoolAddress: uint64sToAddress([minipoolAddress0, minipoolAddress1, minipoolAddress2])
-  })
+  const [index, minipoolAddress0, minipoolAddress1, minipoolAddress2] =
+    workerData.slice(1 + (1 + 3) * i, 1 + (1 + 3) * ++i)
+  possiblyEligibleMinipools.set(parseInt(index),
+    uint64sToAddress([minipoolAddress0, minipoolAddress1, minipoolAddress2]))
 }
 
 const nodeSmoothingTimes = new Map()
@@ -42,7 +39,8 @@ async function processCommittees(epochIndex) {
     for (const [position, validatorIndexStr] of committee.validators.entries()) {
       const validatorIndex = parseInt(validatorIndexStr)
       if (!possiblyEligibleMinipools.has(validatorIndex)) continue
-      const {nodeAddress, minipoolAddress} = possiblyEligibleMinipools.get(validatorIndex)
+      const minipoolAddress = possiblyEligibleMinipools.get(validatorIndex)
+      const nodeAddress = await cachedCall(minipoolAddress, 'getNodeAddress', [], 'finalized')
       const {optInTime, optOutTime} = await getNodeSmoothingTimes(nodeAddress)
       if (blockTime < optInTime || blockTime > optOutTime) continue
       const statusTime = BigInt(await cachedCall(minipoolAddress, 'getStatusTime', [], 'finalized'))

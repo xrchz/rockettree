@@ -181,7 +181,7 @@ log(2, `bnStartEpoch: ${bnStartEpoch}`)
 
 const possiblyEligibleMinipoolIndexArray = new BigUint64Array(
   new SharedArrayBuffer(
-    BigUint64Array.BYTES_PER_ELEMENT * (1 + (1 + 3 + 3) * parseInt(numberOfMinipools))
+    BigUint64Array.BYTES_PER_ELEMENT * (1 + (1 + 3) * parseInt(numberOfMinipools))
   )
 )
 

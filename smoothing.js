@@ -22,8 +22,8 @@ async function processNodeSmoothing(i, nodeAddress) {
         const index = BigInt(await socketCall(['beacon', 'getIndexFromPubkey', pubkey]))
         const currentIndex = parseInt(Atomics.add(workerData, 0, 1n))
         workerData.set(
-          [index, ...addressToUint64s(nodeAddress), ...addressToUint64s(minipoolAddress)],
-          1 + (1 + 3 + 3) * currentIndex)
+          [index, ...addressToUint64s(minipoolAddress)],
+          1 + (1 + 3) * currentIndex)
         return 'staking'
       }
     }
