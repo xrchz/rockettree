@@ -1,5 +1,5 @@
-import { parentPort, workerData, threadId } from 'node:worker_threads'
-import { socketCall, slotsPerEpoch, addressToUint64s, uint256To64s, log } from './lib.js'
+import { parentPort, threadId } from 'node:worker_threads'
+import { socketCall, slotsPerEpoch, log } from './lib.js'
 
 async function processSlot(epochToCheck) {
   const rocketPoolDuties = new Map()
@@ -33,16 +33,17 @@ async function processSlot(epochToCheck) {
     const attestations = JSON.parse(await socketCall(['beacon', 'getAttestationsFromSlot', slotToCheck]))
 
     attestations.forEach(({slotNumber, committeeIndex, attested}) => {
-      if (slotToCheck <= parseInt(slotNumber)) return
-      if (slotToCheck - parseInt(slotNumber) > parseInt(slotsPerEpoch)) return
+      const slotIndex = parseInt(slotNumber)
+      if (slotToCheck <= slotIndex) return
+      if (slotToCheck - slotIndex > parseInt(slotsPerEpoch)) return
       const dutyKey = `${slotNumber},${committeeIndex}`
       if (!rocketPoolDuties.has(dutyKey)) return
       const duties = rocketPoolDuties.get(dutyKey)
-      duties.forEach(({position, minipoolAddress, minipoolScore}) => {
+      duties.forEach(({position, minipoolAddress}) => {
         if (!attested[position]) return
         if (!minipoolAttestations.has(minipoolAddress)) minipoolAttestations.set(minipoolAddress, new Set())
         const slots = minipoolAttestations.get(minipoolAddress)
-        slots.add(slotNumber)
+        slots.add(slotIndex)
       })
     })
   }
