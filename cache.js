@@ -372,7 +372,7 @@ const RewardSubmission = previousIntervalEvent.args[1]
 const ExecutionBlock = RewardSubmission[1]
 const ConsensusBlock = RewardSubmission[2]
 
-const dataKeys = ['duties', 'attestations']
+const dataKeys = ['duties', 'attestations', 'scores']
 
 const server = createServer({allowHalfOpen: true, noDelay: true}, socket => {
   socket.setEncoding('utf8')

@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import { ethers } from 'ethers'
 import { provider, startBlock, slotsPerEpoch, networkName, stakingStatus, tryBigInt, makeLock,
-         log, addressToUint64s, uint64sTo256, uint64sToAddress, socketCall, cachedCall } from './lib.js'
+         log, socketCall, cachedCall } from './lib.js'
 
 const currentIndex = BigInt(await cachedCall('rocketRewardsPool', 'getRewardIndex', [], 'targetElBlock'))
 log(2, `currentIndex: ${currentIndex}`)
@@ -253,7 +253,8 @@ const attestationWorkers = makeWorkers('./attestations.js')
 const epochsToCheckForAttestations = Array.from(
   Array(parseInt(targetSlotEpoch + 1n - bnStartEpoch + 1n)).keys())
 .map(i => bnStartEpoch + BigInt(i))
-const epochsToCollectAttestations = Array.from(epochsToCheckForAttestations)
+const epochsToComputeScores = epochsToCheckForAttestations.slice()
+const epochsToCollectScores = epochsToComputeScores.slice()
 
 while (epochsToCheckForAttestations.length) {
   if (epochsToCheckForAttestations.length % 10 == 0)
@@ -267,32 +268,46 @@ while (epochsToCheckForAttestations.length) {
 await Promise.all(attestationWorkers.map(data => data.promise))
 attestationWorkers.forEach(data => data.worker.postMessage('exit'))
 
+const scoresWorkers = makeWorkers('./scores.js')
+
+while (epochsToComputeScores.length) {
+  if (epochsToComputeScores.length % 10 == 0)
+    log(3, `${timestamp()}: ${epochsToComputeScores.length} epochs left to compute scores`)
+  const epoch = epochsToComputeScores.shift().toString()
+  const worker = await getWorker(scoresWorkers)
+  worker.postMessage(epoch)
+}
+
+await Promise.all(scoresWorkers.map(data => data.promise))
+scoresWorkers.forEach(data => data.worker.postMessage('exit'))
+
 const minipoolScores = new Map()
 const minipoolAttestations = new Map()
 let totalMinpoolScore = 0n
 let successfulAttestations = 0n
 
-while (epochsToCollectAttestations.length) {
-  if (epochsToCollectAttestations.length % 10 == 0)
-    log(3, `${timestamp()}: ${epochsToCollectAttestations.length} epochs left to collect attestations`)
-  const epoch = epochsToCollectAttestations.shift().toString()
-  const value = await socketCall(['attestations', epoch]).then(s => s.split(','))
-  while (value.length) {
-    const [minipoolAddress, scoresLength] = value.splice(0, 2)
+while (epochsToCollectScores.length) {
+  if (epochsToCollectScores.length % 10 == 0)
+    log(3, `${timestamp()}: ${epochsToCollectScores.length} epochs left to collect scores`)
+  const epoch = epochsToCollectScores.shift().toString()
+  const attestations = await socketCall(['attestations', epoch]).then(s => s.split(','))
+  while (attestations.length) {
+    const [minipoolAddress, slotsLength] = attestations.splice(0, 2)
+    attestations.splice(0, parseInt(slotsLength))
+    const slotsScores = await socketCall(['scores', `${epoch}/${minipoolAddress}`]).then(s => s.length ? s.split(',') : [])
     if (!minipoolAttestations.has(minipoolAddress)) minipoolAttestations.set(minipoolAddress, new Set())
     const slots = minipoolAttestations.get(minipoolAddress)
-    Array(parseInt(scoresLength)).fill().forEach(() => {
-      const [slotIndex, scoreStr] = value.splice(0, 2)
-      if (!slots.has(slotIndex)) {
-        slots.add(slotIndex)
-        const scoreInc = BigInt(scoreStr)
-        const oldScore = minipoolScores.has(minipoolAddress) ?
-          minipoolScores.get(minipoolAddress) : 0n
-        minipoolScores.set(minipoolAddress, oldScore + scoreInc)
-        totalMinpoolScore += scoreInc
-        successfulAttestations++
-      }
-    })
+    let cumulativeScore = minipoolScores.has(minipoolAddress) ?
+      minipoolScores.get(minipoolAddress) : 0n
+    for (const [slotIndex, scoreStr] of slotsScores) {
+      if (slots.has(slotIndex)) continue
+      slots.add(slotIndex)
+      const minipoolScore = BigInt(scoreStr)
+      cumulativeScore += minipoolScore
+      totalMinpoolScore += minipoolScore
+      successfulAttestations++
+    }
+    minipoolScores.set(minipoolAddress, cumulativeScore)
   }
 }
 

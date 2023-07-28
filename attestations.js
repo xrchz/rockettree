@@ -14,8 +14,7 @@ async function processSlot(epochToCheck) {
       Array(parseInt(duties.shift())).fill().forEach(() => {
         const minipoolAddress = duties.shift()
         const position = parseInt(duties.shift())
-        const minipoolScore = BigInt(duties.shift())
-        value.push({minipoolAddress, position, minipoolScore})
+        value.push({minipoolAddress, position})
       })
     }
   }
@@ -41,9 +40,9 @@ async function processSlot(epochToCheck) {
       const duties = rocketPoolDuties.get(dutyKey)
       duties.forEach(({position, minipoolAddress, minipoolScore}) => {
         if (!attested[position]) return
-        if (!minipoolAttestations.has(minipoolAddress)) minipoolAttestations.set(minipoolAddress, new Map())
-        const scores = minipoolAttestations.get(minipoolAddress)
-        scores.set(slotNumber, minipoolScore)
+        if (!minipoolAttestations.has(minipoolAddress)) minipoolAttestations.set(minipoolAddress, new Set())
+        const slots = minipoolAttestations.get(minipoolAddress)
+        slots.add(slotNumber)
       })
     })
   }
@@ -55,8 +54,8 @@ parentPort.on('message', async (msg) => {
   if (msg === 'exit') process.exit()
   const minipoolAttestations = await processSlot(msg)
   const value = []
-  minipoolAttestations.forEach((scores, addr) =>
-    value.push(addr, scores.size, Array.from(scores.entries())))
-  await socketCall(['attestations', msg, value.flat(2).join()])
+  minipoolAttestations.forEach((slots, addr) =>
+    value.push(addr, slots.size, Array.from(slots.values())))
+  await socketCall(['attestations', msg, value.flat().join()])
   parentPort.postMessage('done')
 })
