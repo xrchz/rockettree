@@ -1,19 +1,20 @@
 import { uint64sToAddress, socketCall, log } from './lib.js'
 import { parentPort, workerData, threadId } from 'node:worker_threads'
 
+const possiblyEligibleMinipoolIndexArray = workerData.value
 const possiblyEligibleMinipools = new Map()
 let i = 0
-const possiblyEligibleMinipoolIndices = workerData[0]
+const possiblyEligibleMinipoolIndices = possiblyEligibleMinipoolIndexArray[0]
 while (i < possiblyEligibleMinipoolIndices) {
   const [index, minipoolAddress0, minipoolAddress1, minipoolAddress2] =
-    workerData.slice(1 + (1 + 3) * i, 1 + (1 + 3) * ++i)
+    possiblyEligibleMinipoolIndexArray.slice(1 + (1 + 3) * i, 1 + (1 + 3) * ++i)
   possiblyEligibleMinipools.set(parseInt(index),
     uint64sToAddress([minipoolAddress0, minipoolAddress1, minipoolAddress2]))
 }
 
 async function processCommittees(epochIndex) {
   const duties = []
-  const committees = JSON.parse(await socketCall(['beacon', 'getCommittees', epochIndex]))
+  const committees = await socketCall(['beacon', 'getCommittees', epochIndex])
   log(3, `${threadId} processing ${committees.length} committees for ${epochIndex}`)
   for (const committee of committees) {
     const slotIndex = BigInt(committee.slot)

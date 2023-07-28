@@ -1,10 +1,9 @@
 import 'dotenv/config'
 import PouchDB from 'pouchdb-node'
-import { unlinkSync } from 'node:fs'
+import { workerData } from 'node:worker_threads'
 import { ethers } from 'ethers'
-import { createServer } from 'node:net'
 import { log, tryBigInt, makeLock, provider, startBlock, genesisTime,
-         secondsPerSlot, slotsPerEpoch, networkName, socketPath } from './lib.js'
+         secondsPerSlot, slotsPerEpoch, networkName } from './lib.js'
 
 const dbDir = process.env.DB_DIR || 'db'
 const db = new PouchDB(dbDir)
@@ -374,65 +373,56 @@ const ConsensusBlock = RewardSubmission[2]
 
 const dataKeys = ['duties', 'attestations', 'scores']
 
-const server = createServer({allowHalfOpen: true, noDelay: true}, socket => {
-  socket.setEncoding('utf8')
-  const data = []
-  socket.on('data', (chunk) => data.push(chunk))
-  socket.on('end', async () => {
-    const request = data.join('')
-    const splits = request.split('/')
-    if (splits.length == 5 && splits[0] == 'contract') {
-      const [contractName, fn, argsJoined, blockTagName] = splits.slice(1)
-      const args = argsJoined.length ? argsJoined.split(',') : []
-      const contract = getContract(contractName)
-      const blockTag = blockTagName == 'targetElBlock' ? targetElBlock : blockTagName
-      const result = await cachedCall(contract, fn, args, blockTag)
-      socket.end(result.toString())
-    }
-    else if (splits.length == 3 && splits[0] == 'beacon') {
-      if (splits[1] == 'getAttestationsFromSlot')
-        socket.end(JSON.stringify(await getAttestationsFromSlot(splits[2])))
-      else if (splits[1] == 'getValidatorStatus')
-        socket.end(JSON.stringify(await getValidatorStatus(targetBcSlot, splits[2])))
-      else if (splits[1] == 'getIndexFromPubkey')
-        socket.end((await getIndexFromPubkey(splits[2])).toString())
-      else if (splits[1] == 'getCommittees')
-        socket.end(JSON.stringify(await getCommittees(splits[2])))
-      else if (splits[1] == 'checkSlotExists')
-        socket.end((await checkSlotExists(splits[2])) ? 't' : '')
-      else
-        socket.end(`invalid request: unknown beacon request ${splits[1]}`)
-    }
-    else if (splits.length == 3 && splits[0] == 'nodeSmoothingTimes' && splits[2] == 'check')
-      socket.end((await nodeSmoothingTimes(splits[1], targetElBlock, splits[2])) ? 't' : '')
-    else if (splits.length == 4 && splits[0] == 'nodeSmoothingTimes') {
-      await nodeSmoothingTimes(splits[1], targetElBlock, {optInTime: splits[2], optOutTime: splits[3]})
-      socket.end('success')
-    }
-    else if (splits.length == 3 && dataKeys.includes(splits[0]) && splits[2] == 'check')
-      socket.end((await cachedData(splits[0], splits[1], splits[2])) ? 't' : '')
-    else if (splits.length == 3 && dataKeys.includes(splits[0]))
-      socket.end(await cachedData(splits[0], splits[1], splits[2]))
-    else if (splits.length == 2 && dataKeys.includes(splits[0]))
-      socket.end(await cachedData(splits[0], splits[1]))
-    else if (splits.length == 2 && splits[0] == 'nodeSmoothingTimes')
-      socket.end(JSON.stringify(await nodeSmoothingTimes(splits[1], targetElBlock)))
-    else if (splits.length == 1 && splits[0] == 'ExecutionBlock')
-      socket.end(ExecutionBlock.toString())
-    else if (splits.length == 1 && splits[0] == 'ConsensusBlock')
-      socket.end(ConsensusBlock.toString())
-    else if (splits.length == 1 && splits[0] == 'targetElBlockTimestamp')
-      socket.end(targetElBlockTimestamp.toString())
-    else if (splits.length == 1 && splits[0] == 'targetSlotEpoch')
-      socket.end(targetSlotEpoch.toString())
-    else if (splits.length == 1 && splits[0] == 'intervalTime')
-      socket.end(intervalTime.toString())
-    else if (splits.length == 1 && splits[0] == 'smoothingPoolBalance')
-      socket.end(smoothingPoolBalance.toString())
+const cachePort = workerData
+cachePort.on('message', async ({id, request: splits}) => {
+  if (splits.length == 5 && splits[0] == 'contract') {
+    const [contractName, fn, argsJoined, blockTagName] = splits.slice(1)
+    const args = argsJoined.length ? argsJoined.split(',') : []
+    const contract = getContract(contractName)
+    const blockTag = blockTagName == 'targetElBlock' ? targetElBlock : blockTagName
+    const response = await cachedCall(contract, fn, args, blockTag)
+    cachePort.postMessage({id, response})
+  }
+  else if (splits.length == 3 && splits[0] == 'beacon') {
+    if (splits[1] == 'getAttestationsFromSlot')
+      cachePort.postMessage({id, response: await getAttestationsFromSlot(splits[2])})
+    else if (splits[1] == 'getValidatorStatus')
+      cachePort.postMessage({id, response: await getValidatorStatus(targetBcSlot, splits[2])})
+    else if (splits[1] == 'getIndexFromPubkey')
+      cachePort.postMessage({id, response: await getIndexFromPubkey(splits[2])})
+    else if (splits[1] == 'getCommittees')
+      cachePort.postMessage({id, response: await getCommittees(splits[2])})
+    else if (splits[1] == 'checkSlotExists')
+      cachePort.postMessage({id, response: await checkSlotExists(splits[2])})
     else
-      socket.end('invalid request')
-  })
+      cachePort.postMessage({id, error: `invalid request: unknown beacon request ${splits[1]}`})
+  }
+  else if (splits.length == 3 && splits[0] == 'nodeSmoothingTimes' && splits[2] == 'check')
+    cachePort.postMessage({id, response: await nodeSmoothingTimes(splits[1], targetElBlock, splits[2])})
+  else if (splits.length == 4 && splits[0] == 'nodeSmoothingTimes') {
+    await nodeSmoothingTimes(splits[1], targetElBlock, {optInTime: splits[2], optOutTime: splits[3]})
+    cachePort.postMessage({id, response: 'success'})
+  }
+  else if (splits.length == 3 && dataKeys.includes(splits[0]) && splits[2] == 'check')
+    cachePort.postMessage({id, response: await cachedData(splits[0], splits[1], splits[2])})
+  else if (splits.length == 3 && dataKeys.includes(splits[0]))
+    cachePort.postMessage({id, response: await cachedData(splits[0], splits[1], splits[2])})
+  else if (splits.length == 2 && dataKeys.includes(splits[0]))
+    cachePort.postMessage({id, response: await cachedData(splits[0], splits[1])})
+  else if (splits.length == 2 && splits[0] == 'nodeSmoothingTimes')
+    cachePort.postMessage({id, response: await nodeSmoothingTimes(splits[1], targetElBlock)})
+  else if (splits.length == 1 && splits[0] == 'ExecutionBlock')
+    cachePort.postMessage({id, response: ExecutionBlock})
+  else if (splits.length == 1 && splits[0] == 'ConsensusBlock')
+    cachePort.postMessage({id, response: ConsensusBlock})
+  else if (splits.length == 1 && splits[0] == 'targetElBlockTimestamp')
+    cachePort.postMessage({id, response: targetElBlockTimestamp})
+  else if (splits.length == 1 && splits[0] == 'targetSlotEpoch')
+    cachePort.postMessage({id, response: targetSlotEpoch})
+  else if (splits.length == 1 && splits[0] == 'intervalTime')
+    cachePort.postMessage({id, response: intervalTime})
+  else if (splits.length == 1 && splits[0] == 'smoothingPoolBalance')
+    cachePort.postMessage({id, response: smoothingPoolBalance})
+  else
+    cachePort.postMessage({id, error: 'invalid request'})
 })
-server.listen(socketPath)
-process.on('SIGINT', () => { unlinkSync(socketPath); process.exit() })
-process.on('uncaughtExceptionMonitor', () => unlinkSync(socketPath))

@@ -1,23 +1,28 @@
 import 'dotenv/config'
 import { ethers } from 'ethers'
-import { createConnection } from 'node:net'
+import { isMainThread, threadId, Worker, MessageChannel, workerData } from 'node:worker_threads'
 
-export const socketPath = process.env.SOCKET || '/tmp/rockettree.ipc'
+export const { port1: cacheUserPort, port2: cachePort } = isMainThread ? new MessageChannel() : { port1: workerData.cacheUserPort }
+if (isMainThread) {
+  new Worker('./cache.js', {workerData: cachePort, transferList: [cachePort]})
+}
 
+let nextRequestId = 0n
+const requests = new Map()
+function requestHandler({id, response}) {
+  const requestId = `${id.threadId}-${id.nonce}`
+  if (requests.has(requestId)) {
+    const resolve = requests.get(requestId)
+    requests.delete(requestId)
+    resolve(response)
+  }
+}
+if (cacheUserPort) cacheUserPort.on('message', requestHandler)
 export function socketCall(request) {
-  let socket
-  socket = createConnection({path: socketPath, allowHalfOpen: true, noDelay: true})
-  socket.on('error', (e) => {
-    if (e.code !== 'EAGAIN') throw e
-    else console.log('socket error: eagain')
-  })
-  socket.setEncoding('utf8')
-  const data = []
-  socket.on('data', (d) => data.push(d))
-  return new Promise(resolve => {
-    socket.on('end', () => resolve(data.join('')))
-    socket.end(request.join('/'))
-  })
+  const requestId = {threadId, nonce: nextRequestId++}
+  const promise = new Promise(resolve => requests.set(`${requestId.threadId}-${requestId.nonce}`, resolve))
+  cacheUserPort.postMessage({id: requestId, request})
+  return promise
 }
 
 export const cachedCall = (contractName, fn, args, blockTag) =>

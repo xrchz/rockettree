@@ -1,6 +1,8 @@
 import { parentPort, workerData, threadId } from 'node:worker_threads'
 import { log, stakingStatus, cachedCall, socketCall, addressToUint64s } from './lib.js'
 
+const possiblyEligibleMinipoolIndexArray = workerData.value
+
 const farPastTime = 0n
 const farFutureTime = BigInt(1e18)
 
@@ -20,8 +22,8 @@ async function processNodeSmoothing(i, nodeAddress) {
         const pubkey = await cachedCall(
           'rocketMinipoolManager', 'getMinipoolPubkey', [minipoolAddress], 'finalized')
         const index = BigInt(await socketCall(['beacon', 'getIndexFromPubkey', pubkey]))
-        const currentIndex = parseInt(Atomics.add(workerData, 0, 1n))
-        workerData.set(
+        const currentIndex = parseInt(Atomics.add(possiblyEligibleMinipoolIndexArray, 0, 1n))
+        possiblyEligibleMinipoolIndexArray.set(
           [index, ...addressToUint64s(minipoolAddress)],
           1 + (1 + 3) * currentIndex)
         return 'staking'
@@ -38,7 +40,7 @@ async function processNodeSmoothing(i, nodeAddress) {
     else if (result === 'staking')
       staking = true
   }
-  if (Boolean(await socketCall(['nodeSmoothingTimes', nodeAddress, 'check'])))
+  if (await socketCall(['nodeSmoothingTimes', nodeAddress, 'check']))
     return
   if (!staking) {
     log(4, `${nodeAddress} has no staking minipools: skipping`)

@@ -1,7 +1,8 @@
 import 'dotenv/config'
 import { ethers } from 'ethers'
+import { Worker, MessageChannel } from 'node:worker_threads'
 import { provider, startBlock, slotsPerEpoch, networkName, stakingStatus, tryBigInt, makeLock,
-         log, socketCall, cachedCall } from './lib.js'
+         log, cacheUserPort, socketCall, cachedCall } from './lib.js'
 
 const currentIndex = BigInt(await cachedCall('rocketRewardsPool', 'getRewardIndex', [], 'targetElBlock'))
 log(2, `currentIndex: ${currentIndex}`)
@@ -45,9 +46,9 @@ const nodeEffectiveStakes = new Map()
 const MAX_CONCURRENT_MINIPOOLS = parseInt(process.env.MAX_CONCURRENT_MINIPOOLS) || 10
 const MAX_CONCURRENT_NODES = parseInt(process.env.MAX_CONCURRENT_NODES) || 10
 
-const targetElBlockTimestamp = BigInt(await socketCall(['targetElBlockTimestamp']))
-const intervalTime = BigInt(await socketCall(['intervalTime']))
-const targetSlotEpoch = BigInt(await socketCall(['targetSlotEpoch']))
+const targetElBlockTimestamp = await socketCall(['targetElBlockTimestamp'])
+const intervalTime = await socketCall(['intervalTime'])
+const targetSlotEpoch = await socketCall(['targetSlotEpoch'])
 
 async function processNodeRPL(i) {
   const nodeAddress = nodeAddresses[i]
@@ -61,7 +62,7 @@ async function processNodeRPL(i) {
     if (minipoolStatus != stakingStatus) return
     const pubkey = await cachedCall(
       'rocketMinipoolManager', 'getMinipoolPubkey', [minipoolAddress], 'finalized')
-    const validatorStatus = JSON.parse(await socketCall(['beacon', 'getValidatorStatus', pubkey]))
+    const validatorStatus = await socketCall(['beacon', 'getValidatorStatus', pubkey])
     const activationEpoch = validatorStatus.activation_epoch
     const exitEpoch = validatorStatus.exit_epoch
     const eligible = activationEpoch != 'FAR_FUTURE_EPOCH' && BigInt(activationEpoch) < targetSlotEpoch &&
@@ -173,8 +174,8 @@ log(3, `pDAO rewards delta: ${actualPDaoRewards - pDaoRewards}`)
 
 if (currentIndex == 0) process.exit()
 
-const ExecutionBlock = BigInt(await socketCall(['ExecutionBlock']))
-const ConsensusBlock = BigInt(await socketCall(['ConsensusBlock']))
+const ExecutionBlock = await socketCall(['ExecutionBlock'])
+const ConsensusBlock = await socketCall(['ConsensusBlock'])
 
 const bnStartEpoch = tryBigInt(process.env.OVERRIDE_START_EPOCH) || ConsensusBlock / slotsPerEpoch + 1n
 log(2, `bnStartEpoch: ${bnStartEpoch}`)
@@ -185,22 +186,32 @@ const possiblyEligibleMinipoolIndexArray = new BigUint64Array(
   )
 )
 
-import { Worker } from 'node:worker_threads'
 const NUM_WORKERS = parseInt(process.env.NUM_WORKERS) || 12
+const workerPorts = new Map()
 
 const makeWorkers = (path, workerData) =>
   Array.from(Array(NUM_WORKERS).keys()).map(i => {
+    const { port1, port2 } = new MessageChannel()
+    port1.on('message', msg => cacheUserPort.postMessage(msg))
     const data = {
-      worker: new Worker(path, {workerData}),
+      worker: new Worker(path, {workerData: {cacheUserPort: port2, value: workerData}, transferList: [port2]}),
       promise: i,
       resolveWhenReady: null
     }
-    data.worker.on('message', () => {
-      if (typeof data.resolveWhenReady == 'function')
-        data.resolveWhenReady(i)
+    workerPorts.set(data.worker.threadId, port1)
+    data.worker.on('message', (msg) => {
+      if (msg === "done") {
+        if (typeof data.resolveWhenReady == 'function')
+          data.resolveWhenReady(i)
+      }
     })
     return data
   })
+
+cacheUserPort.on('message', msg => {
+  if (typeof msg.id == 'object' && workerPorts.has(msg.id.threadId))
+    workerPorts.get(msg.id.threadId).postMessage(msg)
+})
 
 const smoothingWorkers = makeWorkers('./smoothing.js', possiblyEligibleMinipoolIndexArray)
 
@@ -215,7 +226,7 @@ async function getWorker(workers) {
 for (const i of nodeIndices) {
   const left = nodeIndices.length - i
   if (left % 10 == 0)
-    log(3, `${left} nodes left to process smoothing`)
+    log(3, `${left} nodes left to process smoothing times`)
   const nodeAddress = nodeAddresses[i]
   const worker = await getWorker(smoothingWorkers)
   worker.postMessage({i, nodeAddress})
@@ -248,71 +259,64 @@ while (intervalEpochsToGetDuties.length) {
 await Promise.all(dutiesWorkers.map(data => data.promise))
 dutiesWorkers.forEach(data => data.worker.postMessage('exit'))
 
-const attestationWorkers = makeWorkers('./attestations.js')
+const minipoolScores = new Map()
+const minipoolAttestations = new Map()
+const minipoolAttestationsLock = makeLock()
+const minipoolScoresLock = makeLock()
+let totalMinipoolScore = 0n
+let successfulAttestations = 0n
 
-const epochsToCheckForAttestations = Array.from(
+const attestationWorkers = makeWorkers('./attestations.js')
+const scoresWorkers = makeWorkers('./scores.js')
+
+async function processAttestation ({minipoolAddress, slotIndex}) {
+  if (typeof minipoolAddress != 'string' || typeof slotIndex != 'number') return
+  if (await minipoolAttestationsLock(() => {
+    if (!minipoolAttestations.has(minipoolAddress)) minipoolAttestations.set(minipoolAddress, new Set())
+    const slots = minipoolAttestations.get(minipoolAddress)
+    if (slots.has(slotIndex)) return true
+    slots.add(slotIndex)
+    successfulAttestations++
+  })) return
+  const worker = await getWorker(scoresWorkers)
+  worker.postMessage({minipoolAddress, slotIndex})
+}
+
+attestationWorkers.forEach(data => data.worker.on('message', processAttestation))
+
+function processScore ({minipoolAddress, minipoolScore}) {
+  if (typeof minipoolAddress != 'string' || typeof minipoolScore != 'bigint') return
+  return minipoolScoresLock(() => {
+    minipoolScores.set(minipoolAddress,
+      minipoolScores.has(minipoolAddress) ?
+      minipoolScores.get(minipoolAddress) + minipoolScore :
+      minipoolScore)
+    totalMinipoolScore += minipoolScore
+  })
+}
+
+scoresWorkers.forEach(data => data.worker.on('message', processScore))
+
+const epochs = Array.from(
   Array(parseInt(targetSlotEpoch + 1n - bnStartEpoch + 1n)).keys())
 .map(i => bnStartEpoch + BigInt(i))
-const epochsToComputeScores = epochsToCheckForAttestations.slice()
-const epochsToCollectScores = epochsToComputeScores.slice()
 
-while (epochsToCheckForAttestations.length) {
-  if (epochsToCheckForAttestations.length % 10 == 0)
-    log(3, `${timestamp()}: ${epochsToCheckForAttestations.length} epochs left to check for attestations`)
-  const epochToCheck = epochsToCheckForAttestations.shift().toString()
-  if (await socketCall(['attestations', epochToCheck, 'check'])) continue
+while (epochs.length) {
+  if (epochs.length % 10 == 0)
+    log(3, `${timestamp()}: ${epochs.length} epochs left to process attestations`)
+  const epoch = epochs.shift().toString()
   const worker = await getWorker(attestationWorkers)
-  worker.postMessage(epochToCheck)
+  worker.postMessage(epoch)
 }
 
 await Promise.all(attestationWorkers.map(data => data.promise))
 attestationWorkers.forEach(data => data.worker.postMessage('exit'))
 
-const scoresWorkers = makeWorkers('./scores.js')
-
-while (epochsToComputeScores.length) {
-  if (epochsToComputeScores.length % 10 == 0)
-    log(3, `${timestamp()}: ${epochsToComputeScores.length} epochs left to compute scores`)
-  const epoch = epochsToComputeScores.shift().toString()
-  const worker = await getWorker(scoresWorkers)
-  worker.postMessage(epoch)
-}
-
 await Promise.all(scoresWorkers.map(data => data.promise))
 scoresWorkers.forEach(data => data.worker.postMessage('exit'))
 
-const minipoolScores = new Map()
-const minipoolAttestations = new Map()
-let totalMinpoolScore = 0n
-let successfulAttestations = 0n
-
-while (epochsToCollectScores.length) {
-  if (epochsToCollectScores.length % 10 == 0)
-    log(3, `${timestamp()}: ${epochsToCollectScores.length} epochs left to collect scores`)
-  const epoch = epochsToCollectScores.shift().toString()
-  const attestations = await socketCall(['attestations', epoch]).then(s => s.split(','))
-  while (attestations.length) {
-    const [minipoolAddress, slotsLength] = attestations.splice(0, 2)
-    attestations.splice(0, parseInt(slotsLength))
-    const slotsScores = await socketCall(['scores', `${epoch}/${minipoolAddress}`]).then(s => s.length ? s.split(',') : [])
-    if (!minipoolAttestations.has(minipoolAddress)) minipoolAttestations.set(minipoolAddress, new Set())
-    const slots = minipoolAttestations.get(minipoolAddress)
-    let cumulativeScore = minipoolScores.has(minipoolAddress) ?
-      minipoolScores.get(minipoolAddress) : 0n
-    for (const [slotIndex, scoreStr] of slotsScores) {
-      if (slots.has(slotIndex)) continue
-      slots.add(slotIndex)
-      const minipoolScore = BigInt(scoreStr)
-      cumulativeScore += minipoolScore
-      totalMinpoolScore += minipoolScore
-      successfulAttestations++
-    }
-    minipoolScores.set(minipoolAddress, cumulativeScore)
-  }
-}
-
 log(3, `successfulAttestations: ${successfulAttestations}`)
-log(3, `totalMinpoolScore: ${totalMinpoolScore}`)
+log(3, `totalMinipoolScore: ${totalMinipoolScore}`)
 
 const nodeRewards = new Map()
 function addNodeReward(nodeAddress, token, amount) {
@@ -323,14 +327,14 @@ function addNodeReward(nodeAddress, token, amount) {
 nodeCollateralAmounts.forEach((v, k) => addNodeReward(k, 'RPL', v))
 oDaoAmounts.forEach((v, k) => addNodeReward(k, 'RPL', v))
 
-const smoothingPoolBalance = BigInt(await socketCall(['smoothingPoolBalance']))
-const totalNodeOpShare = smoothingPoolBalance * totalMinpoolScore / (successfulAttestations * _100Percent)
+const smoothingPoolBalance = await socketCall(['smoothingPoolBalance'])
+const totalNodeOpShare = smoothingPoolBalance * totalMinipoolScore / (successfulAttestations * _100Percent)
 let totalEthForMinipools = 0n
 
 log(3, `totalNodeOpShare: ${totalNodeOpShare}`)
 
 for (const [minipoolAddress, minipoolScore] of minipoolScores.entries()) {
-  const minipoolEth = totalNodeOpShare * minipoolScore / totalMinpoolScore
+  const minipoolEth = totalNodeOpShare * minipoolScore / totalMinipoolScore
   addNodeReward(await cachedCall(minipoolAddress, 'getNodeAddress', [], 'finalized'), 'ETH', minipoolEth)
   totalEthForMinipools += minipoolEth
 }
