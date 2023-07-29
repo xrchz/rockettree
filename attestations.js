@@ -1,5 +1,17 @@
 import { parentPort, threadId } from 'node:worker_threads'
-import { socketCall, slotsPerEpoch, log } from './lib.js'
+import { socketCall, cachedCall, slotsPerEpoch, genesisTime, secondsPerSlot, log } from './lib.js'
+
+const nodeSmoothingTimes = new Map()
+async function getNodeSmoothingTimes(nodeAddress) {
+  if (nodeSmoothingTimes.has(nodeAddress))
+    return nodeSmoothingTimes.get(nodeAddress)
+  const result = await socketCall(['nodeSmoothingTimes', nodeAddress])
+  const optInTime = BigInt(result.optInTime)
+  const optOutTime = BigInt(result.optOutTime)
+  const value = {optInTime, optOutTime}
+  nodeSmoothingTimes.set(nodeAddress, value)
+  return value
+}
 
 async function processEpoch(epochToCheck) {
   const rocketPoolDuties = new Map()
@@ -31,18 +43,25 @@ async function processEpoch(epochToCheck) {
     if (!(await socketCall(['beacon', 'checkSlotExists', slotToCheck]))) continue
     const attestations = await socketCall(['beacon', 'getAttestationsFromSlot', slotToCheck])
 
-    attestations.forEach(({slotNumber, committeeIndex, attested}) => {
+    // TODO: try as Promise.all?
+    for (const {slotNumber, committeeIndex, attested} of attestations) {
       const slotIndex = parseInt(slotNumber)
-      if (slotToCheck <= slotIndex) return
-      if (slotToCheck - slotIndex > parseInt(slotsPerEpoch)) return
+      if (slotToCheck <= slotIndex) continue
+      if (slotToCheck - slotIndex > parseInt(slotsPerEpoch)) continue
       const dutyKey = `${slotNumber},${committeeIndex}`
-      if (!rocketPoolDuties.has(dutyKey)) return
-      const duties = rocketPoolDuties.get(dutyKey)
-      duties.forEach(({position, minipoolAddress}) => {
-        if (!attested[position]) return
+      if (!rocketPoolDuties.has(dutyKey)) continue
+      const blockTime = genesisTime + secondsPerSlot * BigInt(slotIndex)
+      // TODO: try as Promise.all?
+      for (const {position, minipoolAddress} of rocketPoolDuties.get(dutyKey)) {
+        if (!attested[position]) continue
+        const nodeAddress = await cachedCall(minipoolAddress, 'getNodeAddress', [], 'finalized')
+        const {optInTime, optOutTime} = await getNodeSmoothingTimes(nodeAddress)
+        if (blockTime < optInTime || blockTime > optOutTime) continue
+        const statusTime = BigInt(await cachedCall(minipoolAddress, 'getStatusTime', [], 'finalized'))
+        if (blockTime < statusTime) continue
         parentPort.postMessage({minipoolAddress, slotIndex})
-      })
-    })
+      }
+    }
   }
 }
 
