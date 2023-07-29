@@ -2,7 +2,7 @@ import 'dotenv/config'
 import { ethers } from 'ethers'
 import { Worker, MessageChannel } from 'node:worker_threads'
 import { provider, startBlock, slotsPerEpoch, networkName, stakingStatus, tryBigInt, makeLock,
-         log, cacheUserPort, socketCall, cachedCall } from './lib.js'
+         log, cacheWorker, cacheUserPort, socketCall, cachedCall } from './lib.js'
 
 const currentIndex = BigInt(await cachedCall('rocketRewardsPool', 'getRewardIndex', [], 'targetElBlock'))
 log(2, `currentIndex: ${currentIndex}`)
@@ -340,6 +340,8 @@ for (const [minipoolAddress, minipoolScore] of minipoolScores.entries()) {
 }
 
 log(2, `totalEthForMinipools: ${totalEthForMinipools}`)
+
+cacheWorker.postMessage('exit')
 
 function nodeMetadataHash(nodeAddress, totalRPL, totalETH) {
   const data = new Uint8Array(20 + 32 + 32 + 32)

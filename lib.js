@@ -3,8 +3,9 @@ import { ethers } from 'ethers'
 import { isMainThread, threadId, Worker, MessageChannel, workerData } from 'node:worker_threads'
 
 export const { port1: cacheUserPort, port2: cachePort } = isMainThread ? new MessageChannel() : { port1: workerData.cacheUserPort }
+export let cacheWorker
 if (isMainThread) {
-  new Worker('./cache.js', {workerData: cachePort, transferList: [cachePort]})
+  cacheWorker = new Worker('./cache.js', {workerData: cachePort, transferList: [cachePort]})
 }
 
 let nextRequestId = 0n

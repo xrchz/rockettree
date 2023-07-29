@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import PouchDB from 'pouchdb-node'
-import { workerData } from 'node:worker_threads'
+import { workerData, parentPort } from 'node:worker_threads'
 import { ethers } from 'ethers'
 import { log, tryBigInt, makeLock, provider, startBlock, genesisTime,
          secondsPerSlot, slotsPerEpoch, networkName } from './lib.js'
@@ -403,14 +403,14 @@ cachePort.on('message', async ({id, request: splits}) => {
     await nodeSmoothingTimes(splits[1], targetElBlock, {optInTime: splits[2], optOutTime: splits[3]})
     cachePort.postMessage({id, response: 'success'})
   }
+  else if (splits.length == 2 && splits[0] == 'nodeSmoothingTimes')
+    cachePort.postMessage({id, response: await nodeSmoothingTimes(splits[1], targetElBlock)})
   else if (splits.length == 3 && dataKeys.includes(splits[0]) && splits[2] == 'check')
     cachePort.postMessage({id, response: await cachedData(splits[0], splits[1], splits[2])})
   else if (splits.length == 3 && dataKeys.includes(splits[0]))
     cachePort.postMessage({id, response: await cachedData(splits[0], splits[1], splits[2])})
   else if (splits.length == 2 && dataKeys.includes(splits[0]))
     cachePort.postMessage({id, response: await cachedData(splits[0], splits[1])})
-  else if (splits.length == 2 && splits[0] == 'nodeSmoothingTimes')
-    cachePort.postMessage({id, response: await nodeSmoothingTimes(splits[1], targetElBlock)})
   else if (splits.length == 1 && splits[0] == 'ExecutionBlock')
     cachePort.postMessage({id, response: ExecutionBlock})
   else if (splits.length == 1 && splits[0] == 'ConsensusBlock')
@@ -425,4 +425,8 @@ cachePort.on('message', async ({id, request: splits}) => {
     cachePort.postMessage({id, response: smoothingPoolBalance})
   else
     cachePort.postMessage({id, error: 'invalid request'})
+})
+
+parentPort.on('message', msg => {
+  if (msg === 'exit') process.exit()
 })
