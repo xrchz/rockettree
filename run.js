@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import { ethers } from 'ethers'
 import { Worker, MessageChannel } from 'node:worker_threads'
-import { provider, startBlock, slotsPerEpoch, networkName, stakingStatus, tryBigInt, makeLock,
+import { provider, startBlock, slotsPerEpoch, networkName, tryBigInt, makeLock,
          log, cacheWorker, cacheUserPort, socketCall, cachedCall } from './lib.js'
 
 const currentIndex = BigInt(await cachedCall('rocketRewardsPool', 'getRewardIndex', [], 'targetElBlock'))
@@ -33,89 +33,73 @@ const nodeAddresses = await Promise.all(
 )
 log(3, `nodeAddresses: ${nodeAddresses.slice(0, 5)}...`)
 
-const ratio = BigInt(await cachedCall('rocketNetworkPrices', 'getRPLPrice', [], 'targetElBlock'))
-const minCollateralFraction = BigInt(await cachedCall(
-  'rocketDAOProtocolSettingsNode', 'getMinimumPerMinipoolStake', [], 'targetElBlock'))
-const maxCollateralFraction = BigInt(await cachedCall(
-  'rocketDAOProtocolSettingsNode', 'getMaximumPerMinipoolStake', [], 'targetElBlock'))
+const NUM_WORKERS = parseInt(process.env.NUM_WORKERS) || 12
+const workerPorts = new Map()
 
-let totalEffectiveRplStake = 0n
+const makeWorkers = (path, workerData) =>
+  Array.from(Array(NUM_WORKERS).keys()).map(i => {
+    const { port1, port2 } = new MessageChannel()
+    port1.on('message', msg => cacheUserPort.postMessage(msg))
+    const data = {
+      worker: new Worker(path, {workerData: {cacheUserPort: port2, value: workerData}, transferList: [port2]}),
+      promise: i,
+      resolveWhenReady: null
+    }
+    workerPorts.set(data.worker.threadId, port1)
+    data.worker.on('message', (msg) => {
+      if (msg === "done") {
+        if (typeof data.resolveWhenReady == 'function')
+          data.resolveWhenReady(i)
+      }
+    })
+    return data
+  })
+
+cacheUserPort.on('message', msg => {
+  if (typeof msg.id == 'object' && workerPorts.has(msg.id.threadId))
+    workerPorts.get(msg.id.threadId).postMessage(msg)
+})
+
+async function getWorker(workers) {
+  const i = await Promise.any(workers.map(data => data.promise))
+  workers[i].promise = new Promise(resolve => {
+    workers[i].resolveWhenReady = resolve
+  })
+  return workers[i].worker
+}
+
+const timestamp = () => Intl.DateTimeFormat('en-GB',
+  {hour: 'numeric', minute: 'numeric', second: 'numeric'})
+  .format(new Date())
 
 const nodeEffectiveStakes = new Map()
+let totalEffectiveRplStake = 0n
 
-const MAX_CONCURRENT_MINIPOOLS = parseInt(process.env.MAX_CONCURRENT_MINIPOOLS) || 10
-const MAX_CONCURRENT_NODES = parseInt(process.env.MAX_CONCURRENT_NODES) || 10
-
-const targetElBlockTimestamp = await socketCall(['targetElBlockTimestamp'])
-const intervalTime = await socketCall(['intervalTime'])
-const targetSlotEpoch = await socketCall(['targetSlotEpoch'])
-
-async function processNodeRPL(i) {
-  const nodeAddress = nodeAddresses[i]
-  const minipoolCount = BigInt(await cachedCall(
-    'rocketMinipoolManager', 'getNodeMinipoolCount', [nodeAddress], 'targetElBlock'))
-  log(3, `Processing ${nodeAddress}'s ${minipoolCount} minipools`)
-  let eligibleBorrowedEth = 0n
-  let eligibleBondedEth = 0n
-  async function processMinipool(minipoolAddress) {
-    const minipoolStatus = parseInt(await cachedCall(minipoolAddress, 'getStatus', [], 'targetElBlock'))
-    if (minipoolStatus != stakingStatus) return
-    const pubkey = await cachedCall(
-      'rocketMinipoolManager', 'getMinipoolPubkey', [minipoolAddress], 'finalized')
-    const validatorStatus = await socketCall(['beacon', 'getValidatorStatus', pubkey])
-    const activationEpoch = validatorStatus.activation_epoch
-    const exitEpoch = validatorStatus.exit_epoch
-    const eligible = activationEpoch != 'FAR_FUTURE_EPOCH' && BigInt(activationEpoch) < targetSlotEpoch &&
-                     (exitEpoch == 'FAR_FUTURE_EPOCH' || targetSlotEpoch < BigInt(exitEpoch))
-    if (eligible) {
-      const borrowedEth = BigInt(await cachedCall(minipoolAddress, 'getUserDepositBalance', [], 'targetElBlock'))
-      eligibleBorrowedEth += borrowedEth
-      const bondedEth = BigInt(await cachedCall(minipoolAddress, 'getNodeDepositBalance', [], 'targetElBlock'))
-      eligibleBondedEth += bondedEth
-    }
-  }
-  const minipoolIndicesToProcess = Array.from(Array(parseInt(minipoolCount)).keys())
-  while (minipoolIndicesToProcess.length) {
-    log(4, `${minipoolIndicesToProcess.length} minipools left for ${nodeAddress}`)
-    await Promise.all(
-      minipoolIndicesToProcess.splice(0, MAX_CONCURRENT_MINIPOOLS)
-      .map(i => cachedCall('rocketMinipoolManager', 'getNodeMinipoolAt', [nodeAddress, i], 'finalized')
-                .then(addr => processMinipool(addr)))
-    )
-  }
-  const minCollateral = eligibleBorrowedEth * minCollateralFraction / ratio
-  const maxCollateral = eligibleBondedEth * maxCollateralFraction / ratio
-  const nodeStake = BigInt(await cachedCall(
-    'rocketNodeStaking', 'getNodeRPLStake', [nodeAddress], 'targetElBlock')
-  )
-  let nodeEffectiveStake = nodeStake < minCollateral ? 0n :
-                           nodeStake < maxCollateral ? nodeStake : maxCollateral
-  const registrationTime = BigInt(await cachedCall(
-    'rocketNodeManager', 'getNodeRegistrationTime', [nodeAddress], 'finalized'))
-  const nodeAge = targetElBlockTimestamp - registrationTime
-  if (nodeAge < intervalTime)
-    nodeEffectiveStake = nodeEffectiveStake * nodeAge / intervalTime
-  log(3, `${nodeAddress} effective stake: ${nodeEffectiveStake}`)
+function processNodeRPL({nodeAddress, nodeEffectiveStake}) {
+  if (typeof nodeAddress != 'string' || typeof nodeEffectiveStake != 'bigint') return
   nodeEffectiveStakes.set(nodeAddress, nodeEffectiveStake)
   totalEffectiveRplStake += nodeEffectiveStake
 }
 
-const numberOfMinipools = BigInt(
-  await cachedCall('rocketMinipoolManager', 'getMinipoolCount', [], 'targetElBlock'))
-
-const nodeCollateralAmounts = new Map()
-let totalCalculatedCollateralRewards = 0n
+const nodeRPLWorkers = makeWorkers('./nodeRPL.js')
+nodeRPLWorkers.forEach(data => data.worker.on('message', processNodeRPL))
 
 const nodeIndicesToProcessRPL = nodeIndices.slice()
 while (nodeIndicesToProcessRPL.length) {
-  log(3, `${nodeIndicesToProcessRPL.length} nodes left to process RPL`)
-  await Promise.all(
-    nodeIndicesToProcessRPL.splice(0, MAX_CONCURRENT_NODES)
-    .map(i => processNodeRPL(i))
-  )
+  if (nodeIndicesToProcessRPL.length % 10 == 0)
+    log(3, `${timestamp()}: ${nodeIndicesToProcessRPL.length} nodes left to process RPL`)
+  const i = nodeIndicesToProcessRPL.shift()
+  const nodeAddress = nodeAddresses[i]
+  const worker = await getWorker(nodeRPLWorkers)
+  worker.postMessage(nodeAddress)
 }
+await Promise.all(nodeRPLWorkers.map(data => data.promise))
+nodeRPLWorkers.forEach(data => data.worker.postMessage('exit'))
+
 log(1, `totalEffectiveRplStake: ${totalEffectiveRplStake}`)
 
+const nodeCollateralAmounts = new Map()
+let totalCalculatedCollateralRewards = 0n
 
 for (const nodeAddress of nodeAddresses) {
   const nodeEffectiveStake = nodeEffectiveStakes.get(nodeAddress)
@@ -124,9 +108,17 @@ for (const nodeAddress of nodeAddresses) {
   totalCalculatedCollateralRewards += nodeCollateralAmount
 }
 
+const numberOfMinipools = BigInt(
+  await cachedCall('rocketMinipoolManager', 'getMinipoolCount', [], 'targetElBlock'))
+
 log(1, `totalCalculatedCollateralRewards: ${totalCalculatedCollateralRewards}`)
 if (collateralRewards - totalCalculatedCollateralRewards > numberOfMinipools)
   throw new Error('collateral calculation has excessive error')
+
+const MAX_CONCURRENT_NODES = parseInt(process.env.MAX_CONCURRENT_NODES) || 10
+const targetElBlockTimestamp = await socketCall(['targetElBlockTimestamp'])
+const intervalTime = await socketCall(['intervalTime'])
+const targetSlotEpoch = await socketCall(['targetSlotEpoch'])
 
 const oDaoCount = BigInt(await cachedCall('rocketDAONodeTrusted', 'getMemberCount', [], 'targetElBlock'))
 const oDaoIndices = Array.from(Array(parseInt(oDaoCount)).keys())
@@ -186,42 +178,7 @@ const possiblyEligibleMinipoolIndexArray = new BigUint64Array(
   )
 )
 
-const NUM_WORKERS = parseInt(process.env.NUM_WORKERS) || 12
-const workerPorts = new Map()
-
-const makeWorkers = (path, workerData) =>
-  Array.from(Array(NUM_WORKERS).keys()).map(i => {
-    const { port1, port2 } = new MessageChannel()
-    port1.on('message', msg => cacheUserPort.postMessage(msg))
-    const data = {
-      worker: new Worker(path, {workerData: {cacheUserPort: port2, value: workerData}, transferList: [port2]}),
-      promise: i,
-      resolveWhenReady: null
-    }
-    workerPorts.set(data.worker.threadId, port1)
-    data.worker.on('message', (msg) => {
-      if (msg === "done") {
-        if (typeof data.resolveWhenReady == 'function')
-          data.resolveWhenReady(i)
-      }
-    })
-    return data
-  })
-
-cacheUserPort.on('message', msg => {
-  if (typeof msg.id == 'object' && workerPorts.has(msg.id.threadId))
-    workerPorts.get(msg.id.threadId).postMessage(msg)
-})
-
 const smoothingWorkers = makeWorkers('./smoothing.js', possiblyEligibleMinipoolIndexArray)
-
-async function getWorker(workers) {
-  const i = await Promise.any(workers.map(data => data.promise))
-  workers[i].promise = new Promise(resolve => {
-    workers[i].resolveWhenReady = resolve
-  })
-  return workers[i].worker
-}
 
 for (const i of nodeIndices) {
   const left = nodeIndices.length - i
@@ -242,10 +199,6 @@ const dutiesWorkers = makeWorkers('./duties.js', possiblyEligibleMinipoolIndexAr
 const intervalEpochsToGetDuties = Array.from(
   Array(parseInt(targetSlotEpoch - bnStartEpoch + 1n)).keys())
 .map(i => bnStartEpoch + BigInt(i))
-
-const timestamp = () => Intl.DateTimeFormat('en-GB',
-  {hour: 'numeric', minute: 'numeric', second: 'numeric'})
-  .format(new Date())
 
 while (intervalEpochsToGetDuties.length) {
   if (intervalEpochsToGetDuties.length % 10 == 0)
