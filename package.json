@@ -1,13 +1,12 @@
 {
   "name": "rockettree",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "license": "GPL-3.0-or-later",
-  "description": "Calcualte the Rocket Pool Rewards Merkle Tree",
+  "description": "Calculate the Rocket Pool Rewards Merkle Tree",
   "type": "module",
   "dependencies": {
-    "commander": "10",
     "dotenv": "16",
     "ethers": "6",
-    "pouchdb-node": "8"
+    "lmdb": "2"
   }
 }

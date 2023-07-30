@@ -1,17 +1,17 @@
 import 'dotenv/config'
-import PouchDB from 'pouchdb-node'
+import { open } from 'lmdb'
 import { workerData, parentPort } from 'node:worker_threads'
 import { ethers } from 'ethers'
 import { log, tryBigInt, makeLock, provider, startBlock, genesisTime,
          secondsPerSlot, slotsPerEpoch, networkName } from './lib.js'
 
 const dbDir = process.env.DB_DIR || 'db'
-const db = new PouchDB(dbDir)
+const db = open({path: dbDir})
 
 const writeLocks = new Map()
 const writeLocksLock = makeLock()
 
-const bigIntPrefix = 'BI:'
+const bigIntPrefix = 'B:'
 const numberPrefix = 'N:'
 function serialise(result) {
   const type = typeof result
@@ -39,24 +39,21 @@ function deserialise(data) {
 async function cachedBeacon(path, result) {
   const key = `/${networkName}/${path}`
   if (result === undefined) {
-    return await db.get(key).then(
-      doc => deserialise(doc.value),
-      err => result
-    )
+    return deserialise(db.get(key))
   }
-  else await db.put({_id: key, value: serialise(result)})
+  else await db.put(key, serialise(result))
 }
 
 async function cachedData(name, epoch, data) {
   const key = `/${networkName}/${name}/${epoch}`
   if (typeof data != 'undefined') {
     if (data === 'check')
-      return await db.allDocs({key}).then(result => result.rows.length)
+      return db.doesExist(key)
     else
-      await db.put({_id: key, value: data})
+      await db.put(key, data)
   }
   else
-    return await db.get(key).then(doc => doc.value)
+    return db.get(key)
 }
 
 const beaconRpcUrl = process.env.BN_URL || 'http://localhost:5052'
@@ -145,15 +142,13 @@ async function cachedCall(contract, fn, args, blockTag) {
     return writeLock
   })
   return await writeLock.lock(async () => {
-    const result = await db.get(key)
-      .then(
-        doc => deserialise(doc.value),
-        async err => {
-          const result = await contract[fn](...args, {blockTag})
-          await db.put({_id: key, value: serialise(result)})
-          return result
-        }
-      )
+    let result = db.get(key)
+    if (result !== undefined)
+      result = deserialise(result)
+    else {
+      result = await contract[fn](...args, {blockTag})
+      await db.put(key, serialise(result))
+    }
     writeLock.refs--
     if (!writeLock.refs)
       await writeLocksLock(() => writeLocks.delete(key))
@@ -346,18 +341,12 @@ async function nodeSmoothingTimes(nodeAddress, blockTag, times) {
   const key = `/${networkName}/${blockTag}/nodeSmoothingTimes/${nodeAddress}`
   if (times) {
     if (times === 'check')
-      return await db.allDocs({key}).then(result => result.rows.length)
+      return db.doesExist(key)
     else
-      await db.put({_id: key,
-        optInTime: times.optInTime,
-        optOutTime: times.optOutTime})
+      await db.put(key, times)
   }
   else {
-    const doc = await db.get(key)
-    return {
-      optInTime: doc.optInTime,
-      optOutTime: doc.optOutTime
-    }
+    return db.get(key)
   }
 }
 
