@@ -15,7 +15,7 @@ while (i < possiblyEligibleMinipoolIndices) {
 async function processCommittees(epochIndex) {
   const duties = []
   const committees = await socketCall(['beacon', 'getCommittees', epochIndex])
-  log(3, `${threadId} processing ${committees.length} committees for ${epochIndex}`)
+  log(4, `${threadId} processing ${committees.length} committees for ${epochIndex}`)
   for (const committee of committees) {
     const slotIndex = BigInt(committee.slot)
     const committeeIndex = BigInt(committee.index)

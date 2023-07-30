@@ -16,7 +16,7 @@ const intervalTime = await socketCall(['intervalTime'])
 async function processNodeRPL(nodeAddress) {
   const minipoolCount = BigInt(await cachedCall(
     'rocketMinipoolManager', 'getNodeMinipoolCount', [nodeAddress], 'targetElBlock'))
-  log(3, `Processing ${nodeAddress}'s ${minipoolCount} minipools`)
+  log(4, `Processing ${nodeAddress}'s ${minipoolCount} minipools`)
   let eligibleBorrowedEth = 0n
   let eligibleBondedEth = 0n
   async function processMinipool(minipoolAddress) {
@@ -38,7 +38,7 @@ async function processNodeRPL(nodeAddress) {
   }
   const minipoolIndicesToProcess = Array.from(Array(parseInt(minipoolCount)).keys())
   while (minipoolIndicesToProcess.length) {
-    log(4, `${minipoolIndicesToProcess.length} minipools left for ${nodeAddress}`)
+    log(5, `${minipoolIndicesToProcess.length} minipools left for ${nodeAddress}`)
     await Promise.all(
       minipoolIndicesToProcess.splice(0, MAX_CONCURRENT_MINIPOOLS)
       .map(i => cachedCall('rocketMinipoolManager', 'getNodeMinipoolAt', [nodeAddress, i], 'finalized')
@@ -57,7 +57,7 @@ async function processNodeRPL(nodeAddress) {
   const nodeAge = targetElBlockTimestamp - registrationTime
   if (nodeAge < intervalTime)
     nodeEffectiveStake = nodeEffectiveStake * nodeAge / intervalTime
-  log(3, `${nodeAddress} effective stake: ${nodeEffectiveStake}`)
+  log(4, `${nodeAddress} effective stake: ${nodeEffectiveStake}`)
   parentPort.postMessage({nodeAddress, nodeEffectiveStake})
 }
 

@@ -183,7 +183,7 @@ const smoothingWorkers = makeWorkers('./smoothing.js', possiblyEligibleMinipoolI
 for (const i of nodeIndices) {
   const left = nodeIndices.length - i
   if (left % 10 == 0)
-    log(3, `${left} nodes left to process smoothing times`)
+    log(3, `${timestamp()}: ${left} nodes left to process smoothing times`)
   const nodeAddress = nodeAddresses[i]
   const worker = await getWorker(smoothingWorkers)
   worker.postMessage({i, nodeAddress})
