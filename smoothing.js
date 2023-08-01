@@ -46,7 +46,7 @@ async function processNodeSmoothing(i, nodeAddress) {
     log(4, `${nodeAddress} has no staking minipools: skipping`)
     return
   }
-  const isOptedIn = 'true' == await cachedCall(
+  const isOptedIn = await cachedCall(
     'rocketNodeManager', 'getSmoothingPoolRegistrationState', [nodeAddress], 'targetElBlock')
   const statusChangeTime = BigInt(await cachedCall(
     'rocketNodeManager', 'getSmoothingPoolRegistrationChanged', [nodeAddress], 'targetElBlock'))
