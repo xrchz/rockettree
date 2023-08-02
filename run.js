@@ -219,7 +219,7 @@ const minipoolScoresLock = makeLock()
 let totalMinipoolScore = 0n
 let successfulAttestations = 0n
 
-const attestationWorkers = makeWorkers('./attestations.js')
+const attestationWorkers = makeWorkers('./attestations.js', {targetSlotEpoch, bnStartEpoch})
 const scoresWorkers = makeWorkers('./scores.js')
 
 async function processAttestation ({minipoolAddress, slotIndex}) {

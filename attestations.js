@@ -1,4 +1,4 @@
-import { parentPort, threadId } from 'node:worker_threads'
+import { parentPort, workerData, threadId } from 'node:worker_threads'
 import { socketCall, cachedCall, slotsPerEpoch, genesisTime, secondsPerSlot, log } from './lib.js'
 
 const nodeSmoothingTimes = new Map()
@@ -30,9 +30,9 @@ async function processEpoch(epochToCheck) {
       })
     }
   }
-  if (await socketCall(['duties', prevEpochIndex.toString(), 'check']))
+  if (workerData.value.bnStartEpoch <= prevEpochIndex)
     await addDuties(prevEpochIndex.toString())
-  if (await socketCall(['duties', epochIndex.toString(), 'check']))
+  if (epochIndex <= workerData.value.targetSlotEpoch)
     await addDuties(epochIndex.toString())
 
   const firstSlotToCheck = parseInt(epochIndex * slotsPerEpoch)
