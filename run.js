@@ -3,6 +3,7 @@ import { ethers } from 'ethers'
 import { Worker, MessageChannel } from 'node:worker_threads'
 import { provider, startBlock, slotsPerEpoch, networkName, tryBigInt, makeLock,
          log, cacheWorker, cacheUserPort, socketCall, cachedCall } from './lib.js'
+import { writeFileSync } from 'node:fs'
 
 const currentIndex = BigInt(await cachedCall('rocketRewardsPool', 'getRewardIndex', [], 'targetElBlock'))
 log(2, `currentIndex: ${currentIndex}`)
@@ -315,7 +316,6 @@ nodeRewards.forEach(({ETH, RPL}, nodeAddress) => {
     nodeRewardsObject[nodeAddress] = {ETH, RPL}
   }
 })
-import { writeFileSync } from 'node:fs'
 writeFileSync('node-rewards.json',
   JSON.stringify(nodeRewardsObject,
     (key, value) => typeof value === 'bigint' ? value.toString() : value))
