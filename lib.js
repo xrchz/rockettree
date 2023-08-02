@@ -10,9 +10,12 @@ if (isMainThread) {
 
 let nextRequestId = 0n
 const requests = new Map()
-function requestHandler({id, response}) {
+function requestHandler({id, response, error}) {
   const requestId = `${id.threadId}-${id.nonce}`
-  if (requests.has(requestId)) {
+  if (error !== undefined) {
+    console.warn(`dropping ${requestId} with error: ${error}`)
+  }
+  else if (requests.has(requestId)) {
     const resolve = requests.get(requestId)
     requests.delete(requestId)
     resolve(response)
