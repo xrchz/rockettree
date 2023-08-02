@@ -37,10 +37,8 @@ function deserialise(data) {
 }
 
 async function cachedBeacon(path, result) {
-  const key = `/${networkName}/${path}`
-  if (result === undefined) {
-    return deserialise(db.get(key))
-  }
+  const key = `/${networkName}${path}`
+  if (result === undefined) return deserialise(db.get(key))
   else await db.put(key, serialise(result))
 }
 
@@ -360,7 +358,7 @@ const RewardSubmission = previousIntervalEvent.args[1]
 const ExecutionBlock = RewardSubmission[1]
 const ConsensusBlock = RewardSubmission[2]
 
-const dataKeys = ['duties', 'attestations', 'scores']
+const dataKeys = ['duties']
 
 const cachePort = workerData
 cachePort.on('message', async ({id, request: splits}) => {
