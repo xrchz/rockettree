@@ -1,176 +1,81 @@
-import PouchDB from 'pouchdb-node'
-const dryRun = true
+import { open } from 'lmdb'
+const dryRun = false
 const dbDir = process.env.DB_DIR || 'db'
-const db = new PouchDB(dbDir)
-const prefix = '/mainnet/17433555/'
-// const prefix = '/mainnet/17433555/0x6d010C43d4e96D74C422f2e27370AF48711B49bF/getNodeMinipoolAt/'
-// const prefix = '/mainnet/17433555/0xb8e783882b11Ff4f6Cef3C501EA0f4b960152cc9/getMemberJoinedTime/'
-let result = await db.allDocs({startkey: prefix, endkey: `${prefix}\ufff0`})
-for (const row of result.rows) {
-  if (row.id.includes('finalized')) continue
-  if (!(row.id.includes('getStatusTime'))) continue
-  if (dryRun)
-    console.log(`Would delete ${row.id} ${row.value.rev}`)
-  else {
-    console.log(`Deleting ${row.id} ${row.value.rev}`)
-    await db.remove(row.id, row.value.rev).catch(err =>
-      console.error(`Got ${err} when deleting ${row.id} ${row.value.rev}`))
-  }
-}
+const db = open({path: dbDir})
+
+// for (const key of db.getKeys({start: `/mainnet/17769401/nodeSmoothingTimes`, end: '/mainnet/17769401/nodeSmoothingTimes/1'}))
+//   console.log(`Deleted ${key} status: ${await db.remove(key)}`)
 
 /*
-const epoch = '206725'
-let prefix = `/mainnet/duties/${epoch}`
-let result = await db.allDocs({startkey: prefix, endkey: `${prefix}\ufff0`, include_docs: true})
-for (const row of result.rows) {
-  if (dryRun)
-    console.log(`Would delete ${row.id} ${row.value.rev}`)
-  else {
-    console.log(`Deleting ${row.id} ${row.value.rev}`)
-    await db.remove(row.id, row.value.rev).catch(err =>
-      console.error(`Got ${err} when deleting ${row.id} ${row.value.rev}`))
-  }
-}
-prefix = `/mainnet/attestations/${epoch}`
-result = await db.allDocs({startkey: prefix, endkey: `${prefix}\ufff0`, include_docs: true})
-for (const row of result.rows) {
-  if (dryRun)
-    console.log(`Would delete ${row.id} ${row.value.rev}`)
-  else {
-    console.log(`Deleting ${row.id} ${row.value.rev}`)
-    await db.remove(row.id, row.value.rev).catch(err =>
-      console.error(`Got ${err} when deleting ${row.id} ${row.value.rev}`))
-  }
-}
+for (const key of db.getKeys({start: `/mainnet//`, end: '/mainnet//\ufff0'}))
+   console.log(`Deleted ${key} status: ${await db.remove(key)}`)
 */
-// await db.info().then(res => console.log(`Got db info ${JSON.stringify(res)}`))
-// await db.compact()
-// const prefix = '/mainnet/minipoolAttestations'
-// const prefix = '/mainnet/attestations'
-// const result = await db.allDocs({startkey: prefix, endkey: `${prefix}\ufff0`, include_docs: true})
-// const result = await db.allDocs({startkey: prefix, endkey: `${prefix}\ufff0`})
-// for (const row of result.rows) {
-//   if (dryRun)
-//     console.log(`Would delete ${row.id} ${row.value.rev}`)
-//   else {
-//     console.log(`Deleting ${row.id} ${row.value.rev}`)
-//     await db.remove(row.id, row.value.rev).catch(err =>
-//       console.error(`Got ${err} when deleting ${row.id} ${row.value.rev}`))
-//   }
-// }
+
 /*
-for (const row of result.rows) {
+console.log(typeof db.get('/mainnet/17769401/0x89F478E6Cc24f052103628f36598D4C14Da3D287/getSmoothingPoolRegistrationState/0x1b00208edE554b42C48988b65614C98FF287Db90'))
+process.exit()
+*/
+
+/*
+console.log(db.get('/mainnet//eth/v1/beacon/states/head/committees?epoch=217204')[2037].validators[291])
+process.exit()
+*/
+
+// console.log(db.get('/mainnet/eth/v1/beacon/blinded_blocks/6950560/attestations')[49].attested.slice(291-3, 291+3))
+// console.log(db.get('/mainnet/eth/v1/beacon/blinded_blocks/6950560/attestations').filter(x => x.slotNumber == 6950559).map(x => `${x.slotNumber},${x.committeeIndex}`))
+// process.exit()
+
+// console.log(db.get('/mainnet/17769401/nodeSmoothingTimes/0x1b00208edE554b42C48988b65614C98FF287Db90'))
+// process.exit()
+
+// for (const key of db.getKeys({start: `/mainnet/duties/`, end: '/mainnet/duties/\ufff0'}))
+//   console.log(key)
+
+// const searchFor = '0xd3F2ee2de4BfcCD4bC667cA01c3a8f4b8ec079Dd'
+// skeptical - but true: 0x216b5A5cb93A4d5e2fDbe133321189932dbd57d4 didn't attest 6805920,9 in 6805931
+// skeptical: 0x216b5A5cb93A4d5e2fDbe133321189932dbd57d4 opted out 6805920,9
+// const searchForMinipool = '0x7D2C4a974E5C5f8E081Fb7890ac31E20d2307Fe7'
+// const searchForMinipool = '0x216b5A5cb93A4d5e2fDbe133321189932dbd57d4'
+// const searchForMinipool = '0x0087fEFeB538D3100FCDB7E1781f25442C8932E0'
+// const searchForNode = '0x02FB6F70942A4037A1E06dDdFAEE4f8581A439D9'
+// const result = db.get('/mainnet/17632767/nodeSmoothingTimes/0x02FB6F70942A4037A1E06dDdFAEE4f8581A439D9')
+// const result = db.get('/mainnet/17632767/nodeSmoothingTimes/0x02FB6F70942A4037A1E06dDdFAEE4f8581A439D9')
+/*
+const keys = db.getKeys({start: '/mainnet/17632767/nodeSmoothingTimes/', end: '/mainnet/17632767/nodeSmoothingTimes/1'})
+for (const key of keys) {
   if (dryRun) {
-    console.log(`Would update ${row.id} ${row.value.rev}, with value type ${typeof row.doc.value}`)
+    console.log(`Would delete ${key}`)
   }
   else {
-    console.log(`Updating ${row.id} ${row.value.rev}`)
-    row.doc.value = row.doc.value.join()
-    await db.put(row.doc)
+    console.log(`Deleted ${key} status: ${await db.remove(key)}`)
   }
 }
 */
 /*
-const prefix = '/mainnet/duties'
-const result = await db.allDocs({startkey: prefix, endkey: `${prefix}\ufff0`, include_docs: true})
-console.log(`total_rows: ${result.total_rows}`)
-console.log(`rows.length: ${result.rows.length}`)
-for (const row of result.rows) {
-  if (dryRun)
-    console.log(`Would update ${row.id} ${row.value.rev}`)
-  else {
-    console.log(`Updating ${row.id} ${row.value.rev}`)
-    const oldValue = row.doc.value.split(',')
-    const newValue = []
-    let currentKey
-    let lengthIndex
-    while (oldValue.length) {
-      const [slotIndex, committeeIndex, minipoolAddress, position, minipoolScore] = oldValue.splice(0, 5)
-      const dutyKey = `${slotIndex},${committeeIndex}`
-      if (dutyKey != currentKey) {
-        newValue.push(slotIndex, committeeIndex)
-        currentKey = dutyKey
-        lengthIndex = newValue.length
-        newValue.push(0)
+for (const epoch of Array.from(Array(4500).keys()).map(i => i + 213015)) {
+// for (const epoch of Array.from(Array(10).keys()).map(i => i + 208514)) {
+  const duties = db.get(`/mainnet/duties/${epoch}`).split(',')
+  while (duties.length) {
+    const slot = duties.shift()
+    const committee = duties.shift()
+    let entries = parseInt(duties.shift())
+    while (entries--) {
+      const minipoolAddress = duties.shift()
+      const position = duties.shift()
+      if (minipoolAddress == searchForMinipool) {
+        // console.log(`Found ${searchFor} duty in ${slot},${committee} @ ${position}`)
+        console.log(slot)
       }
-      newValue[lengthIndex]++
-      newValue.push(minipoolAddress, position, minipoolScore)
     }
-    row.doc.value = newValue.join()
-    await db.put(row.doc)
   }
 }
 */
 /*
-const prefix = '/mainnet/finalized'
-const result = await db.allDocs({startkey: prefix, endkey: `${prefix}\ufff0`})
-console.log(`total_rows: ${result.total_rows}`)
-console.log(`rows.length: ${result.rows.length}`)
-for (const row of result.rows) {
-  if (!row.id.includes('getNodeFee'))
-    continue
-  if (dryRun)
-    console.log(`Would delete ${row.id} ${row.value.rev}`)
-  else {
-    console.log(`Deleting ${row.id} ${row.value.rev}`)
-    await db.remove(row.id, row.value.rev).catch(err =>
-      console.error(`Got ${err} when deleting ${row.id} ${row.value.rev}`))
-  }
-}
+// const pubkey = '0x82e13070a677ba241bd5ff5422544200e872ee9f9a3d6da39ef0e35e7e552845a80cbc61cb161fbffc58d44f29d52e27'
+// const pubkey = '0x90d8ee827e20cc23da85f016191cc240e92cc9b589b272f7741f4ec05a5705d1ccf5aaf354989d5300e1a58476ff0e06'
+const pubkey = '0x93f79bc6cf0d3c471af35cfafbc266139919a70eb3df7be98c6ad41977475527067464a35ec04322a0c6963f72724f9a'
+// const result = db.getKeys({start: `/mainnet//eth/v1/beacon/states/head/validators/`, end: '/mainnet//eth/v1/beacon/states/head/validators/1'})
+// for (const key of result) console.log(key)
+const result = db.get(`/mainnet//eth/v1/beacon/states/head/validators/${pubkey}/index`)
+console.log(result)
 */
-/*
-for (const row of result.rows) {
-  if (row.id.endsWith('/blockNumber') || row.id.endsWith('/attestations')) continue
-  if (dryRun)
-    console.log(`Would delete ${row.id} ${row.value.rev}`)
-  else {
-    console.log(`Deleting ${row.id} ${row.value.rev}`)
-    await db.remove(row.id, row.value.rev).catch(err =>
-      console.error(`Got ${err} when deleting ${row.id} ${row.value.rev}`))
-  }
-}
-*/
-// const doc = await db.get('/mainnet/17519633/nodeSmoothingTimes/0x33043c521E9c3e80E0c05A2c25f2e894FefC0328')
-// const doc = await db.get('/mainnet/finalized/0xf7aB34C74c02407ed653Ac9128731947187575C0/getLastBondReductionPrevNodeFee/0x1732EC77fdD9B0f571F05F01d3CB0aee66fdcB00')
-// const doc = await db.get('/mainnet/attestations/206715')
-//for (const epoch of Array.from(Array(4000).keys()).map(i => 210700 + i)) {
-//  const doc = await db.get(`/mainnet/duties/${epoch}`)
-//  const duties = doc.value.split(',')
-//  if (duties.length >= 5 && parseInt(duties[2]) > 0 && BigInt(duties[5]) >= BigInt(3200e18)) {
-//    console.log(`Would delete ${epoch} because there is a large score ${duties[5]}`)
-//    /*
-//    await db.remove(doc._id, doc._rev).catch(err =>
-//        console.error(`Got ${err} when deleting ${doc._id} ${doc._rev}`))
-//   */
-//  }
-//  else console.log(`${epoch} fine`)
-//}
-// console.log(`Deleting ${doc._id} ${doc._rev}`)
-// await db.remove(doc._id, doc._rev).catch(err =>
-//     console.error(`Got ${err} when deleting ${doc._id} ${doc._rev}`))
-// 0x05E3DD28852195a41ac724CfD646CB4E4fDB5D20
-// const doc = await db.get('/mainnet/finalized/0x9C368fe662E603cCBFDFAa02B654D96cD929508B/getNodeFee/')
-// const doc = await db.get('/mainnet/finalized/0x9C368fe662E603cCBFDFAa02B654D96cD929508B/getNodeDepositBalance/')
-// const doc = await db.get('/mainnet/attestations/207819')
-/*
-const doc = await db.get('/mainnet/attestations/206715')
-const atts = doc.value.split(',')
-const addr = '0xc41dd1311f99E55c1A2963416d93279d70D4220f'
-while (atts.length) {
-  if (atts[0] == addr) {
-    console.log(atts.shift())
-    const n = parseInt(atts.shift())
-    Array(n).fill().forEach(() => {
-      console.log(atts.shift())
-      console.log(atts.shift())
-    })
-  }
-  else {
-    atts.shift()
-    const n = parseInt(atts.shift())
-    Array(n).fill().forEach(() => atts.splice(0, 2))
-  }
-}
-*/
-
-await db.close()
