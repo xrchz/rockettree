@@ -3,7 +3,7 @@ import { ethers } from 'ethers'
 import { Worker, MessageChannel } from 'node:worker_threads'
 import { provider, slotsPerEpoch, networkName, tryBigInt, makeLock,
          log, cacheWorker, cacheUserPort, socketCall, cachedCall } from './lib.js'
-import { writeFileSync } from 'node:fs'
+import { writeFileSync, createWriteStream } from 'node:fs'
 
 const currentIndex = BigInt(await cachedCall('rocketRewardsPool', 'getRewardIndex', [], 'targetElBlock'))
 log(2, `currentIndex: ${currentIndex}`)
@@ -280,13 +280,18 @@ log(3, `successfulAttestations: ${successfulAttestations}`)
 log(3, `totalMinipoolScore: ${totalMinipoolScore}`)
 
 if (process.env.RECORD_ATTESTATIONS) {
-  const attestationSlotsOutput = ['{']
+  const str = createWriteStream('minipool-attestation-slots.json')
+  const write = s => new Promise(resolve => { if (str.write(s)) { resolve() } else { str.once('drain', resolve) } })
+  await write('{\n')
+  let first = true
   for (const [minipoolAddress, slotList] of addedAttestations.entries()) {
-    attestationSlotsOutput.push(`"${minipoolAddress}": [${slotList}],`)
+    if (!first) {
+      await write(',\n')
+      first = false
+    }
+    await write(`"${minipoolAddress}": [${slotList}]`)
   }
-  const amendedLastOutput = attestationSlotsOutput.at(-1).slice(0, -1)
-  attestationSlotsOutput.splice(-1, 1, amendedLastOutput, '}')
-  writeFileSync('minipool-attestation-slots.json', attestationSlotsOutput.join('\n'))
+  str.end('\n}')
 }
 
 const nodeRewards = new Map()
