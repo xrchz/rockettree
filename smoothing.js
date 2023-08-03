@@ -22,10 +22,12 @@ async function processNodeSmoothing(i, nodeAddress) {
         const pubkey = await cachedCall(
           'rocketMinipoolManager', 'getMinipoolPubkey', [minipoolAddress], 'finalized')
         const index = BigInt(await socketCall(['beacon', 'getIndexFromPubkey', pubkey]))
-        const currentIndex = parseInt(Atomics.add(possiblyEligibleMinipoolIndexArray, 0, 1n))
-        possiblyEligibleMinipoolIndexArray.set(
-          [index, ...addressToUint64s(minipoolAddress)],
-          1 + (1 + 3) * currentIndex)
+        if (0 <= index) {
+          const currentIndex = parseInt(Atomics.add(possiblyEligibleMinipoolIndexArray, 0, 1n))
+          possiblyEligibleMinipoolIndexArray.set(
+            [index, ...addressToUint64s(minipoolAddress)],
+            1 + (1 + 3) * currentIndex)
+        }
         return 'staking'
       }
     }

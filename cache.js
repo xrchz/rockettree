@@ -101,7 +101,9 @@ async function getValidatorStatus(slotNumber, pubkey) {
   const cache = await cachedBeacon(path); if (cache !== undefined) return cache
   const url = new URL(path, beaconRpcUrl)
   const response = await fetch(url)
-  if (response.status !== 200)
+  if (response.status === 404)
+    response.json = async () => {return {data: {validator: {activation_epoch: 'FAR_FUTURE_EPOCH', exit_epoch: 'FAR_FUTURE_EPOCH'}}}}
+  else if (response.status !== 200)
     console.warn(`Unexpected response status getting ${pubkey} state at ${slotNumber}: ${response.status}`)
   const result = await response.json().then(j => j.data.validator)
   await cachedBeacon(path, result); return result
@@ -113,6 +115,8 @@ async function getIndexFromPubkey(pubkey) {
   const cache = await cachedBeacon(key); if (cache !== undefined) return cache
   const url = new URL(path, beaconRpcUrl)
   const response = await fetch(url)
+  if (response.status === 404)
+    return -1
   if (response.status !== 200)
     console.warn(`Unexpected response status getting ${pubkey} index: ${response.status}`)
   const result = await response.json().then(j => j.data.index)
