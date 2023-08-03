@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import { ethers } from 'ethers'
 import { Worker, MessageChannel } from 'node:worker_threads'
-import { provider, startBlock, slotsPerEpoch, networkName, tryBigInt, makeLock,
+import { provider, slotsPerEpoch, networkName, tryBigInt, makeLock,
          log, cacheWorker, cacheUserPort, socketCall, cachedCall } from './lib.js'
 import { writeFileSync } from 'node:fs'
 
@@ -223,6 +223,8 @@ let successfulAttestations = 0n
 const attestationWorkers = makeWorkers('./attestations.js', {targetSlotEpoch, bnStartEpoch})
 const scoresWorkers = makeWorkers('./scores.js')
 
+const addedAttestations = new Map()
+
 async function processAttestation ({minipoolAddress, slotIndex}) {
   if (typeof minipoolAddress != 'string' || typeof slotIndex != 'number') return
   if (await minipoolAttestationsLock(() => {
@@ -230,6 +232,11 @@ async function processAttestation ({minipoolAddress, slotIndex}) {
     const slots = minipoolAttestations.get(minipoolAddress)
     if (slots.has(slotIndex)) return true
     slots.add(slotIndex)
+    if (process.env.RECORD_ATTESTATIONS) {
+      if (!addedAttestations.has(minipoolAddress)) addedAttestations.set(minipoolAddress, [])
+      const slotList = addedAttestations.get(minipoolAddress)
+      slotList.push(slotIndex)
+    }
     successfulAttestations++
   })) return
   const worker = await getWorker(scoresWorkers)
@@ -271,6 +278,16 @@ scoresWorkers.forEach(data => data.worker.postMessage('exit'))
 
 log(3, `successfulAttestations: ${successfulAttestations}`)
 log(3, `totalMinipoolScore: ${totalMinipoolScore}`)
+
+if (process.env.RECORD_ATTESTATIONS) {
+  const attestationSlotsOutput = ['{']
+  for (const [minipoolAddress, slotList] of addedAttestations.entries()) {
+    attestationSlotsOutput.push(`"${minipoolAddress}": [${slotList}],`)
+  }
+  const amendedLastOutput = attestationSlotsOutput.at(-1).slice(0, -1)
+  attestationSlotsOutput.splice(-1, 1, amendedLastOutput, '}')
+  writeFileSync('minipool-attestation-slots.json', attestationSlotsOutput.join('\n'))
+}
 
 const nodeRewards = new Map()
 function addNodeReward(nodeAddress, token, amount) {
@@ -337,3 +354,7 @@ while (rowHashes.length > 1) {
   }
 }
 log(1, `merkle root: ${rowHashes}`)
+rowHashes.push(`interval: ${currentIndex}`)
+rowHashes.push(`start epoch: ${bnStartEpoch}`)
+rowHashes.push(`target epoch: ${targetSlotEpoch}`)
+writeFileSync('merkle-root.txt', rowHashes.join('\n'))
