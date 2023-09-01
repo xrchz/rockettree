@@ -282,14 +282,18 @@ log(3, `totalMinipoolScore: ${totalMinipoolScore}`)
 if (process.env.RECORD_ATTESTATIONS) {
   const str = createWriteStream('minipool-attestation-slots.json')
   const write = s => new Promise(resolve => { if (str.write(s)) { resolve() } else { str.once('drain', resolve) } })
-  await write('{\n')
   let first = true
   for (const [minipoolAddress, slotList] of addedAttestations.entries()) {
-    if (!first) {
-      await write(',\n')
+    await write(first ? '{\n' : ',\n')
+    await write(`"${minipoolAddress}":`)
+    first = true
+    for (const slot of slotList) {
+      await write(first ? '[' : ',')
       first = false
+      await write(`${slot}`)
     }
-    await write(`"${minipoolAddress}": [${slotList}]`)
+    first = false
+    await write(']')
   }
   str.end('\n}')
 }
