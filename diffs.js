@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
-const official = JSON.parse(readFileSync('/home/ramana/Downloads/rp-rewards-mainnet-12-partial.json', {encoding: 'utf8'})).nodeRewards
-const mine = JSON.parse(readFileSync('node-rewards.json', {encoding: 'utf8'}))
+const official = JSON.parse(readFileSync('rp-rewards-mainnet-13.json')).nodeRewards
+const mine = JSON.parse(readFileSync('node-rewards.json'))
 const mykeys = Object.keys(mine).map(a => a.toLowerCase())
 const officialkeys = Object.keys(official)
 for (const key of officialkeys) {
