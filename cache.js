@@ -228,23 +228,30 @@ log(1, `startTime: ${startTime}`)
 const intervalTime = await cachedCall(rocketRewardsPool, 'getClaimIntervalTime', [], startBlock)
 log(2, `intervalTime: ${intervalTime}`)
 
-const latestBlockTime = await provider.getBlock('latest').then(b => BigInt(b.timestamp))
-log(2, `latestBlockTime: ${latestBlockTime}`)
+let targetBcSlot
+const targetSlotEpochOverride = tryBigInt(process.env.OVERRIDE_TARGET_EPOCH)
 
-const timeSinceStart = latestBlockTime - startTime
-const intervalsPassed = timeSinceStart / intervalTime
-log(2, `intervalsPassed: ${intervalsPassed}`)
+if (!targetSlotEpochOverride) {
 
-const endTime = startTime + (intervalTime * intervalsPassed)
-log(1, `endTime: ${endTime}`)
+  const latestBlockTime = await provider.getBlock('latest').then(b => BigInt(b.timestamp))
+  log(2, `latestBlockTime: ${latestBlockTime}`)
 
-const totalTimespan = endTime - genesisTime
-log(2, `totalTimespan: ${totalTimespan}`)
+  const timeSinceStart = latestBlockTime - startTime
+  const intervalsPassed = timeSinceStart / intervalTime
+  log(2, `intervalsPassed: ${intervalsPassed}`)
 
-let targetBcSlot = totalTimespan / secondsPerSlot
-if (totalTimespan % secondsPerSlot) targetBcSlot++
+  const endTime = startTime + (intervalTime * intervalsPassed)
+  log(1, `endTime: ${endTime}`)
 
-const targetSlotEpoch = tryBigInt(process.env.OVERRIDE_TARGET_EPOCH) || targetBcSlot / slotsPerEpoch
+  const totalTimespan = endTime - genesisTime
+  log(2, `totalTimespan: ${totalTimespan}`)
+
+  targetBcSlot = totalTimespan / secondsPerSlot
+  if (totalTimespan % secondsPerSlot) targetBcSlot++
+
+}
+
+const targetSlotEpoch = targetSlotEpochOverride || targetBcSlot / slotsPerEpoch
 log(1, `targetSlotEpoch: ${targetSlotEpoch}`)
 targetBcSlot = (targetSlotEpoch + 1n) * slotsPerEpoch - 1n
 log(2, `last (possibly missing) slot in epoch: ${targetBcSlot}`)
