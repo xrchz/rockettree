@@ -1,5 +1,6 @@
 import 'dotenv/config'
 import { ethers } from 'ethers'
+import { EventEmitter } from 'node:events'
 import { Worker, MessageChannel } from 'node:worker_threads'
 import { provider, slotsPerEpoch, networkName, tryBigInt, makeLock,
          log, cacheWorker, cacheUserPort, socketCall, cachedCall } from './lib.js'
@@ -37,6 +38,8 @@ log(3, `nodeAddresses: ${nodeAddresses.slice(0, 5)}...`)
 const NUM_WORKERS = parseInt(process.env.NUM_WORKERS) || 12
 const workerPorts = new Map()
 
+EventEmitter.captureRejections = true
+
 const makeWorkers = (path, workerData) =>
   Array.from(Array(NUM_WORKERS).keys()).map(i => {
     const { port1, port2 } = new MessageChannel()
@@ -52,6 +55,11 @@ const makeWorkers = (path, workerData) =>
         if (typeof data.resolveWhenReady == 'function')
           data.resolveWhenReady(i)
       }
+    })
+    data.worker.on('error', (e) => {
+      console.error(`Error in worker ${path} ${i}, exiting...`)
+      console.error(e)
+      process.exit(1)
     })
     return data
   })
