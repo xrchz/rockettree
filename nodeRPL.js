@@ -39,6 +39,7 @@ async function processNodeRPL(nodeAddress) {
   const minipoolIndicesToProcess = Array.from(Array(parseInt(minipoolCount)).keys())
   while (minipoolIndicesToProcess.length) {
     log(5, `${minipoolIndicesToProcess.length} minipools left for ${nodeAddress}`)
+    // TODO: use multicall, at least to get the addresses, possibly also the pubkey. (status requires different blockTag)
     await Promise.all(
       minipoolIndicesToProcess.splice(0, MAX_CONCURRENT_MINIPOOLS)
       .map(i => cachedCall('rocketMinipoolManager', 'getNodeMinipoolAt', [nodeAddress, i], 'finalized')
