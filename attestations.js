@@ -68,5 +68,6 @@ async function processEpoch(epochToCheck) {
 parentPort.on('message', async (msg) => {
   if (msg === 'exit') process.exit()
   await processEpoch(msg)
+  parentPort.postMessage({minipoolAddress: msg, slotIndex: 'done'})
   parentPort.postMessage('done')
 })

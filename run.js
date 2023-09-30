@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events'
 import { Worker, MessageChannel } from 'node:worker_threads'
 import { provider, slotsPerEpoch, networkName, tryBigInt, makeLock,
          log, cacheWorker, cacheUserPort, socketCall, cachedCall } from './lib.js'
-import { writeFileSync, createWriteStream } from 'node:fs'
+import { writeFileSync } from 'node:fs'
 
 const currentIndex = BigInt(await cachedCall('rocketRewardsPool', 'getRewardIndex', [], 'targetElBlock'))
 log(2, `currentIndex: ${currentIndex}`)
@@ -221,50 +221,56 @@ while (intervalEpochsToGetDuties.length) {
 await Promise.all(dutiesWorkers.map(data => data.promise))
 dutiesWorkers.forEach(data => data.worker.postMessage('exit'))
 
-const minipoolScores = new Map()
-const minipoolAttestations = new Map()
+const minipoolAttestationsPerEpoch = new Map()
 const minipoolAttestationsLock = makeLock()
-const minipoolScoresLock = makeLock()
-let totalMinipoolScore = 0n
-let successfulAttestations = 0n
+let epochToCache = parseInt(bnStartEpoch)
+const epochsChecked = new Set()
+const epochsCached = new Set()
 
-const attestationWorkers = makeWorkers('./attestations.js', {targetSlotEpoch, bnStartEpoch})
-const scoresWorkers = makeWorkers('./scores.js')
-
-const addedAttestations = new Map()
-
-async function processAttestation ({minipoolAddress, slotIndex}) {
-  if (typeof minipoolAddress != 'string' || typeof slotIndex != 'number') return
-  if (await minipoolAttestationsLock(() => {
-    if (!minipoolAttestations.has(minipoolAddress)) minipoolAttestations.set(minipoolAddress, new Set())
-    const slots = minipoolAttestations.get(minipoolAddress)
-    if (slots.has(slotIndex)) return true
-    slots.add(slotIndex)
-    if (process.env.RECORD_ATTESTATIONS) {
-      if (!addedAttestations.has(minipoolAddress)) addedAttestations.set(minipoolAddress, [])
-      const slotList = addedAttestations.get(minipoolAddress)
-      slotList.push(slotIndex)
-    }
-    successfulAttestations++
-  })) return
-  const worker = await getWorker(scoresWorkers)
-  worker.postMessage({minipoolAddress, slotIndex})
+async function checkCache(epoch) {
+  if (!epochsCached.has(epoch)) {
+    if (await socketCall(['attestations', epoch.toString(), 'check']))
+      epochsCached.add(epoch)
+  }
+  if (epochsCached.has(epoch)) {
+    epochsChecked.add(epoch)
+    epochsChecked.add(epoch + 1)
+  }
 }
 
-attestationWorkers.forEach(data => data.worker.on('message', processAttestation))
+async function updateEpochToCache() {
+  while (epochsChecked.has(epochToCache) && epochsChecked.has(epochToCache + 1)) {
+    if (!epochsCached.has(epochToCache)) {
+      await socketCall(['attestations', epochToCache.toString(), minipoolAttestationsPerEpoch.get(epochToCache)])
+      epochsCached.add(epochToCache)
+    }
+    minipoolAttestationsPerEpoch.delete(epochToCache)
+    epochToCache++
+  }
+}
 
-function processScore ({minipoolAddress, minipoolScore}) {
-  if (typeof minipoolAddress != 'string' || typeof minipoolScore != 'bigint') return
-  return minipoolScoresLock(() => {
-    minipoolScores.set(minipoolAddress,
-      minipoolScores.has(minipoolAddress) ?
-      minipoolScores.get(minipoolAddress) + minipoolScore :
-      minipoolScore)
-    totalMinipoolScore += minipoolScore
+const attestationWorkers = makeWorkers('./attestations.js', {targetSlotEpoch, bnStartEpoch})
+async function processAttestation ({minipoolAddress, slotIndex}) {
+  if (slotIndex === 'done') {
+    const checkedEpoch = parseInt(minipoolAddress)
+    await minipoolAttestationsLock(async () => {
+      epochsChecked.add(checkedEpoch)
+      await updateEpochToCache()
+    })
+    return
+  }
+  if (typeof minipoolAddress != 'string' || typeof slotIndex != 'number')
+    return
+  await minipoolAttestationsLock(() => {
+    const epoch = parseInt(BigInt(slotIndex) / slotsPerEpoch)
+    if (!minipoolAttestationsPerEpoch.has(epoch)) minipoolAttestationsPerEpoch.set(epoch, new Map())
+    const minipoolAttestations = minipoolAttestationsPerEpoch.get(epoch)
+    if (!minipoolAttestations.has(minipoolAddress)) minipoolAttestations.set(minipoolAddress, new Set())
+    minipoolAttestations.get(minipoolAddress).add(slotIndex)
   })
 }
 
-scoresWorkers.forEach(data => data.worker.on('message', processScore))
+attestationWorkers.forEach(data => data.worker.on('message', processAttestation))
 
 const epochs = Array.from(
   Array(parseInt(targetSlotEpoch + 1n - bnStartEpoch + 1n)).keys())
@@ -273,38 +279,99 @@ const epochs = Array.from(
 while (epochs.length) {
   if (epochs.length % 10 == 0)
     log(3, `${timestamp()}: ${epochs.length} epochs left to process attestations`)
-  const epoch = epochs.shift().toString()
-  const worker = await getWorker(attestationWorkers)
-  worker.postMessage(epoch)
+  const epoch = epochs.shift()
+  const prevEpoch = epoch - 1n
+  await checkCache(parseInt(epoch))
+  await checkCache(parseInt(prevEpoch))
+  if ((bnStartEpoch <= prevEpoch && !epochsCached.has(parseInt(prevEpoch))) ||
+      (epoch <= targetSlotEpoch && !epochsCached.has(parseInt(epoch)))) {
+    const worker = await getWorker(attestationWorkers)
+    worker.postMessage(epoch.toString())
+  }
 }
 
 await Promise.all(attestationWorkers.map(data => data.promise))
 attestationWorkers.forEach(data => data.worker.postMessage('exit'))
 
+const minipoolScores = new Map()
+const minipoolScoresByEpoch = new Map()
+const dutiesToScoreByEpoch = new Map()
+const minipoolScoresLock = makeLock()
+minipoolScores.set('successfulAttestations', 0n)
+
+const scoresWorkers = makeWorkers('./scores.js')
+
+const addToMap = (map, key, num) =>
+  map.set(key, map.has(key) ? map.get(key) + num : num)
+
+function processScore ({minipoolAddress, slotIndex, minipoolScore}) {
+  if (typeof minipoolAddress != 'string' ||
+      typeof slotIndex != 'number' ||
+      typeof minipoolScore != 'bigint') return
+  const epoch = parseInt(BigInt(slotIndex) / slotsPerEpoch)
+  const minipoolScoresForEpoch = minipoolScoresByEpoch.get(epoch)
+  const dutiesToScore = dutiesToScoreByEpoch.get(epoch)
+  return minipoolScoresLock(() => {
+    addToMap(minipoolScoresForEpoch, minipoolAddress, minipoolScore)
+    minipoolScoresForEpoch.set('successfulAttestations',
+      minipoolScoresForEpoch.get('successfulAttestations') + 1n)
+    dutiesToScore.delete(`${minipoolAddress},${slotIndex}`)
+    if (!dutiesToScore.size) {
+      minipoolScoresForEpoch.forEach((minipoolScore, minipoolAddress) =>
+        addToMap(minipoolScores, minipoolAddress, minipoolScore))
+      dutiesToScoreByEpoch.delete(epoch)
+      minipoolScoresByEpoch.delete(epoch)
+      return true
+    }
+  }).then(shouldSave => {
+    if (shouldSave) {
+      return socketCall(['scores', epoch.toString(), minipoolScoresForEpoch])
+    }
+  })
+}
+
+scoresWorkers.forEach(data => data.worker.on('message', processScore))
+
+const epochsToScoreAttestations = Array.from(
+  Array(parseInt(targetSlotEpoch - bnStartEpoch + 1n)).keys())
+.map(i => parseInt(bnStartEpoch) + i)
+
+while (epochsToScoreAttestations.length) {
+  if (epochsToScoreAttestations.length % 10 == 0)
+    log(3, `${timestamp()}: ${epochsToScoreAttestations.length} epochs left to score attestations`)
+  const epoch = epochsToScoreAttestations.shift()
+  const epochStr = epoch.toString()
+  if (await socketCall(['scores', epochStr, 'check'])) {
+    const minipoolScoresForEpoch = await socketCall(['scores', epochStr])
+    minipoolScoresForEpoch.forEach((minipoolScore, minipoolAddress) =>
+      addToMap(minipoolScores, minipoolAddress, minipoolScore))
+  }
+  else {
+    const minipoolScoresForEpoch = new Map()
+    minipoolScoresByEpoch.set(epoch, minipoolScoresForEpoch)
+    minipoolScoresForEpoch.set('successfulAttestations', 0n)
+    const dutiesToScore = new Set()
+    dutiesToScoreByEpoch.set(epoch, dutiesToScore)
+    const minipoolAttestations = await socketCall(['attestations', epochStr])
+    for (const [minipoolAddress, slots] of minipoolAttestations.entries()) {
+      for (const slotIndex of slots.values()) {
+        dutiesToScore.add(`${minipoolAddress},${slotIndex}`)
+        const worker = await getWorker(scoresWorkers)
+        worker.postMessage({minipoolAddress, slotIndex})
+      }
+    }
+  }
+}
+
 await Promise.all(scoresWorkers.map(data => data.promise))
 scoresWorkers.forEach(data => data.worker.postMessage('exit'))
 
-log(3, `successfulAttestations: ${successfulAttestations}`)
-log(3, `totalMinipoolScore: ${totalMinipoolScore}`)
+const successfulAttestations = minipoolScores.get('successfulAttestations')
+minipoolScores.delete('successfulAttestations')
+const totalMinipoolScore = Array.from(minipoolScores.values()).reduce((a, n) => a + n)
 
-if (process.env.RECORD_ATTESTATIONS) {
-  const str = createWriteStream('minipool-attestation-slots.json')
-  const write = s => new Promise(resolve => { if (str.write(s)) { resolve() } else { str.once('drain', resolve) } })
-  let first = true
-  for (const [minipoolAddress, slotList] of addedAttestations.entries()) {
-    await write(first ? '{\n' : ',\n')
-    await write(`"${minipoolAddress}":`)
-    first = true
-    for (const slot of slotList) {
-      await write(first ? '[' : ',')
-      first = false
-      await write(`${slot}`)
-    }
-    first = false
-    await write(']')
-  }
-  str.end('\n}')
-}
+log(2, `successfulAttestations: ${successfulAttestations}`)
+log(2, `totalMinipoolScore: ${totalMinipoolScore}`)
 
 const nodeRewards = new Map()
 function addNodeReward(nodeAddress, token, amount) {
@@ -319,7 +386,7 @@ const smoothingPoolBalance = await socketCall(['smoothingPoolBalance'])
 const totalNodeOpShare = smoothingPoolBalance * totalMinipoolScore / (successfulAttestations * _100Percent)
 let totalEthForMinipools = 0n
 
-log(3, `totalNodeOpShare: ${totalNodeOpShare}`)
+log(2, `totalNodeOpShare: ${totalNodeOpShare}`)
 
 for (const [minipoolAddress, minipoolScore] of minipoolScores.entries()) {
   const minipoolEth = totalNodeOpShare * minipoolScore / totalMinipoolScore

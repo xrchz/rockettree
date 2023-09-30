@@ -15,7 +15,7 @@ async function processAttestation({minipoolAddress, slotIndex}) {
     {bond: previousBond, fee: previousFee} :
     {bond: currentBond, fee: currentFee}
   const minipoolScore = (BigInt(1e18) - fee) * bond / BigInt(32e18) + fee
-  parentPort.postMessage({minipoolAddress, minipoolScore})
+  parentPort.postMessage({minipoolAddress, slotIndex, minipoolScore})
 }
 
 parentPort.on('message', async (msg) => {
