@@ -361,7 +361,8 @@ async function nodeSmoothingTimes(nodeAddress, blockTag, times) {
 
 const currentIndex = await cachedCall(rocketRewardsPool, 'getRewardIndex', [], targetElBlock)
 const previousIntervalEventFilter = rocketRewardsPool.filters.RewardSnapshot(currentIndex - 1n)
-const foundEvents = await rocketRewardsPool.queryFilter(previousIntervalEventFilter, 0, targetElBlock)
+const intervalBlocksApprox = intervalTime / 12n
+const foundEvents = await rocketRewardsPool.queryFilter(previousIntervalEventFilter, targetElBlock - intervalBlocksApprox, targetElBlock)
 if (foundEvents.length !== 1)
   throw new Error(`Did not find exactly 1 RewardSnapshot event for Interval ${currentIndex - 1n}`)
 const previousIntervalEvent = foundEvents.pop()
