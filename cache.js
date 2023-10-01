@@ -375,8 +375,7 @@ const dataKeys = ['duties', 'attestations', 'scores']
 const cachePort = workerData
 cachePort.on('message', async ({id, request: splits}) => {
   if (splits.length == 5 && splits[0] == 'contract') {
-    const [contractName, fn, argsJoined, blockTagName] = splits.slice(1)
-    const args = argsJoined.length ? argsJoined.split(',') : []
+    const [contractName, fn, args, blockTagName] = splits.slice(1)
     const contract = getContract(contractName)
     const blockTag = blockTagName == 'targetElBlock' ? targetElBlock : blockTagName
     const response = await cachedCall(contract, fn, args, blockTag)
