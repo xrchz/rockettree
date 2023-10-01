@@ -20,6 +20,6 @@ async function processAttestation({minipoolAddress, slotIndex}) {
 
 parentPort.on('message', async (msg) => {
   if (msg === 'exit') process.exit()
-  processAttestation(msg)
+  await processAttestation(msg)
   parentPort.postMessage('done')
 })
