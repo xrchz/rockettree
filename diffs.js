@@ -21,3 +21,11 @@ for (const [node, {ETH, RPL}] of Object.entries(mine)) {
   if (RPL != officialRPL)
     console.log(`${node} RPL discrepancy: ${officialRPL} vs ${RPL}`)
 }
+let totalETH = 0n
+for (const [, {ETH}] of Object.entries(mine))
+  totalETH += BigInt(ETH)
+console.log(`Total ETH (mine): ${totalETH}`)
+totalETH = 0n
+for (const [node] of Object.entries(mine))
+  totalETH += BigInt(official[node.toLowerCase()].smoothingPoolEth)
+console.log(`Total ETH (official): ${totalETH}`)
