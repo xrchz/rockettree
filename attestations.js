@@ -65,9 +65,12 @@ async function processEpoch(epochToCheck) {
   }
 }
 
+let acknowledge
 parentPort.on('message', async (msg) => {
   if (msg === 'exit') process.exit()
+  if (msg === 'ack') return acknowledge()
   await processEpoch(msg)
   parentPort.postMessage({minipoolAddress: msg, slotIndex: 'done'})
+  await new Promise(resolve => { acknowledge = resolve })
   parentPort.postMessage('done')
 })

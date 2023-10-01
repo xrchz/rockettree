@@ -250,27 +250,29 @@ async function updateEpochToCache() {
 }
 
 const attestationWorkers = makeWorkers('./attestations.js', {targetSlotEpoch, bnStartEpoch})
-async function processAttestation ({minipoolAddress, slotIndex}) {
-  if (slotIndex === 'done') {
-    const checkedEpoch = parseInt(minipoolAddress)
-    await minipoolAttestationsLock(async () => {
-      epochsChecked.add(checkedEpoch)
-      await updateEpochToCache()
+const processAttestation = (worker) =>
+  async function ({minipoolAddress, slotIndex}) {
+    if (slotIndex === 'done') {
+      const checkedEpoch = parseInt(minipoolAddress)
+      await minipoolAttestationsLock(async () => {
+        epochsChecked.add(checkedEpoch)
+        await updateEpochToCache()
+      })
+      return worker.postMessage('ack')
+    }
+    if (typeof minipoolAddress != 'string' || typeof slotIndex != 'number')
+      return
+    await minipoolAttestationsLock(() => {
+      const epoch = parseInt(BigInt(slotIndex) / slotsPerEpoch)
+      if (!minipoolAttestationsPerEpoch.has(epoch)) minipoolAttestationsPerEpoch.set(epoch, new Map())
+      const minipoolAttestations = minipoolAttestationsPerEpoch.get(epoch)
+      if (!minipoolAttestations.has(minipoolAddress)) minipoolAttestations.set(minipoolAddress, new Set())
+      minipoolAttestations.get(minipoolAddress).add(slotIndex)
     })
-    return
   }
-  if (typeof minipoolAddress != 'string' || typeof slotIndex != 'number')
-    return
-  await minipoolAttestationsLock(() => {
-    const epoch = parseInt(BigInt(slotIndex) / slotsPerEpoch)
-    if (!minipoolAttestationsPerEpoch.has(epoch)) minipoolAttestationsPerEpoch.set(epoch, new Map())
-    const minipoolAttestations = minipoolAttestationsPerEpoch.get(epoch)
-    if (!minipoolAttestations.has(minipoolAddress)) minipoolAttestations.set(minipoolAddress, new Set())
-    minipoolAttestations.get(minipoolAddress).add(slotIndex)
-  })
-}
 
-attestationWorkers.forEach(data => data.worker.on('message', processAttestation))
+attestationWorkers.forEach(data => data.worker.on('message',
+  processAttestation(data.worker)))
 
 const epochs = Array.from(
   Array(parseInt(targetSlotEpoch + 1n - bnStartEpoch + 1n)).keys())
