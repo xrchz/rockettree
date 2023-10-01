@@ -3,8 +3,34 @@ const dryRun = false
 const dbDir = process.env.DB_DIR || 'db'
 const db = open({path: dbDir})
 
+const epoch = 225614
+const key = `/mainnet/scores/${epoch}`
+const map = db.get(key)
+console.log(map.size)
+// const {value: [minipoolAddress, slots]} = map.entries().next()
+//const minipoolAddress = '0xD279B4a9D04a38Fc8f2C140b2eaB6bd8Ea8fc184'
+//const slots = map.get(minipoolAddress)
+//console.log(epoch)
+//console.log(minipoolAddress)
+//console.log(Array.from(slots.values()).join())
+
+/*
+const epoch = 225612
+const key = `/mainnet/attestations/${epoch}`
+console.log(`Deleted ${key} status: ${await db.remove(key)}`)
+const key2 = `/mainnet/scores/${epoch}`
+console.log(`Deleted ${key2} status: ${await db.remove(key2)}`)
+*/
+
 // for (const key of db.getKeys({start: `/mainnet/17769401/nodeSmoothingTimes`, end: '/mainnet/17769401/nodeSmoothingTimes/1'}))
 //   console.log(`Deleted ${key} status: ${await db.remove(key)}`)
+
+/*
+for (const epoch of Array.from(Array(231904-206715+1).keys()).map(i => 206714 +i)) {
+  const key = `/mainnet/attestations/${epoch}`
+  console.log(`Deleted ${key} status: ${await db.remove(key)}`)
+}
+*/
 
 /*
 for (const key of db.getKeys({start: `/mainnet//`, end: '/mainnet//\ufff0'}))
