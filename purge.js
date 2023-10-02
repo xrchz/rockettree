@@ -3,6 +3,21 @@ const dryRun = false
 const dbDir = process.env.DB_DIR || 'db'
 const db = open({path: dbDir})
 
+for (const { key, value } of db.getRange({start: '/mainnet/scores/'})) {
+  if (!key.startsWith('/mainnet/scores/')) break
+  console.log(`Processing ${key}`)
+  const biMap = new Map()
+  value.forEach((n, k) => {
+    if (typeof n != 'bigint') {
+      console.error(`non-bigint in ${key} at ${k}`)
+      process.exit(1)
+    }
+    biMap.set(k, n.toString(16))
+  })
+  await db.put(key, biMap)
+}
+
+/*
 const epoch = 225614
 const key = `/mainnet/scores/${epoch}`
 const map = db.get(key)
@@ -13,6 +28,7 @@ console.log(map.size)
 //console.log(epoch)
 //console.log(minipoolAddress)
 //console.log(Array.from(slots.values()).join())
+*/
 
 /*
 const epoch = 225612

@@ -319,17 +319,18 @@ function processScore ({minipoolAddress, slotIndex, minipoolScore}) {
       minipoolScoresForEpoch.get('successfulAttestations') + 1n)
     dutiesToScore.delete(`${minipoolAddress},${slotIndex}`)
     if (!dutiesToScore.size) {
-      minipoolScoresForEpoch.forEach((minipoolScore, minipoolAddress) =>
-        addToMap(minipoolScores, minipoolAddress, minipoolScore))
+      const toSave = new Map()
+      minipoolScoresForEpoch.forEach((minipoolScore, minipoolAddress) => {
+        addToMap(minipoolScores, minipoolAddress, minipoolScore)
+        toSave.set(minipoolAddress, minipoolScore.toString(16))
+      })
       dutiesToScoreByEpoch.delete(epoch)
       minipoolScoresByEpoch.delete(epoch)
-      return true
+      return toSave
     }
-  }).then(shouldSave => {
-    if (shouldSave) {
-      return socketCall(['scores', epoch.toString(), minipoolScoresForEpoch])
-    }
-  })
+  }).then(toSave => (
+    toSave && socketCall(['scores', epoch.toString(), toSave])
+  ))
 }
 
 scoresWorkers.forEach(data => data.worker.on('message', processScore))
@@ -346,7 +347,7 @@ while (epochsToScoreAttestations.length) {
   if (await socketCall(['scores', epochStr, 'check'])) {
     const minipoolScoresForEpoch = await socketCall(['scores', epochStr])
     minipoolScoresForEpoch.forEach((minipoolScore, minipoolAddress) =>
-      addToMap(minipoolScores, minipoolAddress, minipoolScore))
+      addToMap(minipoolScores, minipoolAddress, BigInt(`0x${minipoolScore}`)))
   }
   else {
     const minipoolScoresForEpoch = new Map()
