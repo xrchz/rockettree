@@ -250,7 +250,7 @@ async function updateEpochToCache() {
 }
 
 const attestationWorkers = makeWorkers('./attestations.js', {targetSlotEpoch, bnStartEpoch})
-const processAttestation = (worker) =>
+const processAttestation = (listener) =>
   async function ({minipoolAddress, slotIndex}) {
     if (slotIndex === 'done') {
       const checkedEpoch = parseInt(minipoolAddress)
@@ -258,7 +258,7 @@ const processAttestation = (worker) =>
         epochsChecked.add(checkedEpoch)
         await updateEpochToCache()
       })
-      return worker.postMessage('ack')
+      return listener('done')
     }
     if (typeof minipoolAddress != 'string' || typeof slotIndex != 'number')
       return
@@ -272,7 +272,7 @@ const processAttestation = (worker) =>
   }
 
 attestationWorkers.forEach(data => data.worker.on('message',
-  processAttestation(data.worker)))
+  processAttestation(data.worker.listeners('message')[0])))
 
 const epochs = Array.from(
   Array(parseInt(targetSlotEpoch + 1n - bnStartEpoch + 1n)).keys())

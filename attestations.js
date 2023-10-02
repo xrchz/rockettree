@@ -1,5 +1,5 @@
 import { parentPort, workerData, threadId } from 'node:worker_threads'
-import { socketCall, cachedCall, makeLock, slotsPerEpoch, genesisTime, secondsPerSlot, log } from './lib.js'
+import { socketCall, cachedCall, slotsPerEpoch, genesisTime, secondsPerSlot, log } from './lib.js'
 
 const nodeSmoothingTimes = new Map()
 async function getNodeSmoothingTimes(nodeAddress) {
@@ -65,24 +65,8 @@ async function processEpoch(epochToCheck) {
   }
 }
 
-let acknowledged = false
-const lock = makeLock()
 parentPort.on('message', async (msg) => {
   if (msg === 'exit') process.exit()
-  if (msg === 'ack') {
-    await lock(() => {
-      if (typeof acknowledged == 'function') acknowledged()
-      acknowledged = true
-    })
-    return
-  }
   await processEpoch(msg)
   parentPort.postMessage({minipoolAddress: msg, slotIndex: 'done'})
-  await new Promise(resolve => {
-    lock(() => {
-      if (acknowledged) resolve()
-      else acknowledged = resolve
-    })
-  })
-  parentPort.postMessage('done')
 })
