@@ -90,10 +90,10 @@ function processNodeRPL({nodeAddress, nodeEffectiveStake}) {
   totalEffectiveRplStake += nodeEffectiveStake
 }
 
-const nodeRPLWorkers = makeWorkers('./nodeRPL.js')
+const nodeRPLWorkers = process.env.SKIP_RPL ? [] : makeWorkers('./nodeRPL.js')
 nodeRPLWorkers.forEach(data => data.worker.on('message', processNodeRPL))
 
-const nodeIndicesToProcessRPL = nodeIndices.slice()
+const nodeIndicesToProcessRPL = process.env.SKIP_RPL ? [] : nodeIndices.slice()
 while (nodeIndicesToProcessRPL.length) {
   if (nodeIndicesToProcessRPL.length % 10 == 0)
     log(3, `${timestamp()}: ${nodeIndicesToProcessRPL.length} nodes left to process RPL`)
@@ -107,18 +107,23 @@ nodeRPLWorkers.forEach(data => data.worker.postMessage('exit'))
 
 log(1, `totalEffectiveRplStake: ${totalEffectiveRplStake}`)
 
+const numberOfMinipools = BigInt(
+  await cachedCall('rocketMinipoolManager', 'getMinipoolCount', [], 'targetElBlock'))
+
 const nodeCollateralAmounts = new Map()
 let totalCalculatedCollateralRewards = 0n
 
-for (const nodeAddress of nodeAddresses) {
-  const nodeEffectiveStake = nodeEffectiveStakes.get(nodeAddress)
-  const nodeCollateralAmount = collateralRewards * nodeEffectiveStake / totalEffectiveRplStake
-  nodeCollateralAmounts.set(nodeAddress, nodeCollateralAmount)
-  totalCalculatedCollateralRewards += nodeCollateralAmount
+if (!process.env.SKIP_RPL) {
+  for (const nodeAddress of nodeAddresses) {
+    const nodeEffectiveStake = nodeEffectiveStakes.get(nodeAddress)
+    const nodeCollateralAmount = collateralRewards * nodeEffectiveStake / totalEffectiveRplStake
+    nodeCollateralAmounts.set(nodeAddress, nodeCollateralAmount)
+    totalCalculatedCollateralRewards += nodeCollateralAmount
+  }
 }
-
-const numberOfMinipools = BigInt(
-  await cachedCall('rocketMinipoolManager', 'getMinipoolCount', [], 'targetElBlock'))
+else {
+  totalCalculatedCollateralRewards = collateralRewards
+}
 
 log(1, `totalCalculatedCollateralRewards: ${totalCalculatedCollateralRewards}`)
 if (collateralRewards - totalCalculatedCollateralRewards > numberOfMinipools)
