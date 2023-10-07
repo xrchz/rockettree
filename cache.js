@@ -417,6 +417,8 @@ cachePort.on('message', async ({id, request: splits}) => {
     cachePort.postMessage({id, response: targetElBlockTimestamp})
   else if (splits.length == 1 && splits[0] == 'targetSlotEpoch')
     cachePort.postMessage({id, response: targetSlotEpoch})
+  else if (splits.length == 1 && splits[0] == 'currentIndex')
+    cachePort.postMessage({id, response: currentIndex})
   else if (splits.length == 1 && splits[0] == 'intervalTime')
     cachePort.postMessage({id, response: intervalTime})
   else if (splits.length == 1 && splits[0] == 'smoothingPoolBalance')

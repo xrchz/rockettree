@@ -12,6 +12,15 @@ const maxCollateralFraction = BigInt(await cachedCall(
 const targetSlotEpoch = await socketCall(['targetSlotEpoch'])
 const targetElBlockTimestamp = await socketCall(['targetElBlockTimestamp'])
 const intervalTime = await socketCall(['intervalTime'])
+const currentIndex = await socketCall(['currentIndex'])
+
+function getEligibility(activationEpoch, exitEpoch) {
+  const deposited = activationEpoch != 'FAR_FUTURE_EPOCH'
+  const activated = deposited && BigInt(activationEpoch) < targetSlotEpoch
+  const notExited = exitEpoch == 'FAR_FUTURE_EPOCH' || targetSlotEpoch < BigInt(exitEpoch)
+  log(5, `deposited: ${deposited} activated: ${activated} notExited: ${notExited}`)
+  return deposited && (currentIndex >= 15n || activated) && notExited
+}
 
 async function processNodeRPL(nodeAddress) {
   const minipoolCount = BigInt(await cachedCall(
@@ -21,15 +30,12 @@ async function processNodeRPL(nodeAddress) {
   let eligibleBondedEth = 0n
   async function processMinipool(minipoolAddress) {
     const minipoolStatus = parseInt(await cachedCall(minipoolAddress, 'getStatus', [], 'targetElBlock'))
+    log(5, `${minipoolAddress} status ${minipoolStatus}`)
     if (minipoolStatus != stakingStatus) return
     const pubkey = await cachedCall(
       'rocketMinipoolManager', 'getMinipoolPubkey', [minipoolAddress], 'finalized')
     const validatorStatus = await socketCall(['beacon', 'getValidatorStatus', pubkey])
-    const activationEpoch = validatorStatus.activation_epoch
-    const exitEpoch = validatorStatus.exit_epoch
-    const eligible = activationEpoch != 'FAR_FUTURE_EPOCH' && BigInt(activationEpoch) < targetSlotEpoch &&
-                     (exitEpoch == 'FAR_FUTURE_EPOCH' || targetSlotEpoch < BigInt(exitEpoch))
-    if (eligible) {
+    if (getEligibility(validatorStatus.activation_epoch, validatorStatus.exit_epoch)) {
       const borrowedEth = BigInt(await cachedCall(minipoolAddress, 'getUserDepositBalance', [], 'targetElBlock'))
       eligibleBorrowedEth += borrowedEth
       const bondedEth = BigInt(await cachedCall(minipoolAddress, 'getNodeDepositBalance', [], 'targetElBlock'))
