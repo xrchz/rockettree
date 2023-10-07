@@ -42,7 +42,7 @@ async function processNodeRPL(nodeAddress) {
     // TODO: use multicall, at least to get the addresses, possibly also the pubkey. (status requires different blockTag)
     await Promise.all(
       minipoolIndicesToProcess.splice(0, MAX_CONCURRENT_MINIPOOLS)
-      .map(i => cachedCall('rocketMinipoolManager', 'getNodeMinipoolAt', [nodeAddress, i], 'finalized')
+      .map(i => cachedCall('rocketMinipoolManager', 'getNodeMinipoolAt', [nodeAddress, i], 'targetElBlock')
                 .then(addr => processMinipool(addr)))
     )
   }
