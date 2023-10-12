@@ -56,10 +56,14 @@ const makeWorkers = (path, workerData) =>
           data.resolveWhenReady(i)
       }
     })
-    data.worker.on('error', (e) => {
+    data.worker.once('error', (e) => {
       console.error(`Error in worker ${path} ${i}, exiting...`)
       console.error(e)
       process.exit(1)
+    })
+    data.worker.once('exit', () => {
+      port1.close()
+      port2.close()
     })
     return data
   })
@@ -103,7 +107,7 @@ while (nodeIndicesToProcessRPL.length) {
   worker.postMessage(nodeAddress)
 }
 await Promise.all(nodeRPLWorkers.map(data => data.promise))
-nodeRPLWorkers.forEach(data => data.worker.postMessage('exit'))
+nodeRPLWorkers.forEach(data => data.worker.terminate())
 
 log(1, `totalEffectiveRplStake: ${totalEffectiveRplStake}`)
 
@@ -204,7 +208,7 @@ for (const i of nodeIndices) {
 }
 
 await Promise.all(smoothingWorkers.map(data => data.promise))
-smoothingWorkers.forEach(data => data.worker.postMessage('exit'))
+smoothingWorkers.forEach(data => data.worker.terminate())
 
 log(3, `${possiblyEligibleMinipoolIndexArray[0]} eligible minipools`)
 
@@ -224,7 +228,7 @@ while (intervalEpochsToGetDuties.length) {
 }
 
 await Promise.all(dutiesWorkers.map(data => data.promise))
-dutiesWorkers.forEach(data => data.worker.postMessage('exit'))
+dutiesWorkers.forEach(data => data.worker.terminate())
 
 const minipoolAttestationsPerEpoch = new Map()
 const minipoolAttestationsLock = makeLock()
@@ -298,7 +302,7 @@ while (epochs.length) {
 }
 
 await Promise.all(attestationWorkers.map(data => data.promise))
-attestationWorkers.forEach(data => data.worker.postMessage('exit'))
+attestationWorkers.forEach(data => data.worker.terminate())
 
 const minipoolScores = new Map()
 const minipoolScoresByEpoch = new Map()
@@ -372,7 +376,7 @@ while (epochsToScoreAttestations.length) {
 }
 
 await Promise.all(scoresWorkers.map(data => data.promise))
-scoresWorkers.forEach(data => data.worker.postMessage('exit'))
+scoresWorkers.forEach(data => data.worker.terminate())
 
 const successfulAttestations = minipoolScores.get('successfulAttestations')
 minipoolScores.delete('successfulAttestations')
@@ -404,7 +408,9 @@ for (const [minipoolAddress, minipoolScore] of minipoolScores.entries()) {
 
 log(2, `totalEthForMinipools: ${totalEthForMinipools}`)
 
-cacheWorker.postMessage('exit')
+const closeDb = socketCall(['close'])
+cacheUserPort.close()
+cacheWorker.unref()
 
 function nodeMetadataHash(nodeAddress, totalRPL, totalETH) {
   const data = new Uint8Array(20 + 32 + 32 + 32)
@@ -450,3 +456,4 @@ rowHashes.push(`interval: ${currentIndex}`)
 rowHashes.push(`start epoch: ${bnStartEpoch}`)
 rowHashes.push(`target epoch: ${targetSlotEpoch}`)
 writeFileSync('merkle-root.txt', rowHashes.join('\n'))
+await closeDb

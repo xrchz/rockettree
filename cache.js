@@ -423,10 +423,8 @@ cachePort.on('message', async ({id, request: splits}) => {
     cachePort.postMessage({id, response: intervalTime})
   else if (splits.length == 1 && splits[0] == 'smoothingPoolBalance')
     cachePort.postMessage({id, response: smoothingPoolBalance})
+  else if (splits.length == 1 && splits[0] == 'close')
+    await db.close()
   else
     cachePort.postMessage({id, error: 'invalid request'})
-})
-
-parentPort.on('message', msg => {
-  if (msg === 'exit') process.exit()
 })

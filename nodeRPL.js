@@ -69,7 +69,6 @@ async function processNodeRPL(nodeAddress) {
 }
 
 parentPort.on('message', async (msg) => {
-  if (msg === 'exit') process.exit()
   await processNodeRPL(msg)
   parentPort.postMessage('done')
 })

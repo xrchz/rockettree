@@ -58,7 +58,6 @@ async function processNodeSmoothing(i, nodeAddress) {
 }
 
 parentPort.on('message', async (msg) => {
-  if (msg == 'exit') process.exit()
   await processNodeSmoothing(msg.i, msg.nodeAddress)
   parentPort.postMessage('done')
 })

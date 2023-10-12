@@ -38,7 +38,6 @@ async function processCommittees(epochIndex) {
 }
 
 parentPort.on('message', async (msg) => {
-  if (msg === 'exit') process.exit()
   await processCommittees(msg)
   parentPort.postMessage('done')
 })

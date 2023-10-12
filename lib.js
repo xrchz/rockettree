@@ -6,6 +6,7 @@ export const { port1: cacheUserPort, port2: cachePort } = isMainThread ? new Mes
 export let cacheWorker
 if (isMainThread) {
   cacheWorker = new Worker('./cache.js', {workerData: cachePort, transferList: [cachePort]})
+  cacheUserPort.once('close', cachePort.close)
 }
 
 let nextRequestId = 0n
