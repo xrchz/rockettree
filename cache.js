@@ -80,15 +80,15 @@ function hexStringToBitlist(s) {
 }
 
 async function getAttestationsFromSlot(slotNumber) {
-  const path = `/eth/v1/beacon/blinded_blocks/${slotNumber}`
+  const path = `/eth/v1/beacon/blocks/${slotNumber}/attestations`
   const key = `${path}/attestations`
   const cache = await cachedBeacon(key); if (cache !== undefined) return cache
   const url = new URL(path, beaconRpcUrl)
   const response = await fetch(url)
   if (response.status !== 200)
-    console.warn(`Unexpected response status getting ${slotNumber} attestations: ${response.status}`)
+    console.warn(`Unexpected response status getting ${slotNumber} attestations: ${response.status}: ${await response.text()}`)
   const json = await response.json()
-  const result = json.data.message.body.attestations.map(
+  const result = json.data.map(
     ({aggregation_bits, data: {slot, index}}) =>
     ({attested: hexStringToBitlist(aggregation_bits),
       slotNumber: slot, committeeIndex: index})
