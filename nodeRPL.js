@@ -1,7 +1,7 @@
-import { socketCall, cachedCall, stakingStatus, log } from './lib.js'
+import { socketCall, cachedCall, multicall, stakingStatus, log } from './lib.js'
 import { parentPort } from 'node:worker_threads'
 
-const MAX_CONCURRENT_MINIPOOLS = parseInt(process.env.MAX_CONCURRENT_MINIPOOLS) || 10
+const MAX_CONCURRENT_MINIPOOLS = parseInt(process.env.MAX_CONCURRENT_MINIPOOLS) || 128
 
 const ratio = BigInt(await cachedCall('rocketNetworkPrices', 'getRPLPrice', [], 'targetElBlock'))
 const minCollateralFraction = BigInt(await cachedCall(
@@ -22,45 +22,63 @@ function getEligibility(activationEpoch, exitEpoch) {
   return deposited && (currentIndex >= 15n || activated) && notExited
 }
 
-async function processNodeRPL(nodeAddress) {
+async function getNodeMinipoolInfo(nodeAddress) {
   const minipoolCount = BigInt(await cachedCall(
     'rocketMinipoolManager', 'getNodeMinipoolCount', [nodeAddress], 'targetElBlock'))
   log(4, `Processing ${nodeAddress}'s ${minipoolCount} minipools`)
+
+  const minipoolIndicesToProcess = Array.from(Array(parseInt(minipoolCount)).keys())
+  const nodeInfo = await multicall(
+    minipoolIndicesToProcess.map(i => (
+      {contractName: 'rocketMinipoolManager', fn: 'getNodeMinipoolAt', args: [nodeAddress, i]}
+    )).concat([
+      {contractName: 'rocketNodeStaking', fn: 'getNodeRPLStake', args: [nodeAddress]},
+      {contractName: 'rocketNodeManager', fn: 'getNodeRegistrationTime', args: [nodeAddress]}
+    ]),
+    'targetElBlock'
+  )
+  const registrationTime = nodeInfo.pop()
+  const nodeStake = nodeInfo.pop()
+
+  const minipoolAddresses = []
+  const minipoolInfo = []
+  while (nodeInfo.length) {
+    log(5, `${nodeInfo.length} minipools left for ${nodeAddress}...`)
+    const minipoolAddressesBatch = nodeInfo.splice(0, MAX_CONCURRENT_MINIPOOLS)
+    minipoolAddresses.push(...minipoolAddressesBatch)
+    await multicall(
+      minipoolAddressesBatch.flatMap(minipoolAddress =>
+        [{contractName: minipoolAddress, fn: 'getStatus', args: []},
+         {contractName: 'rocketMinipoolManager', fn: 'getMinipoolPubkey', args: [minipoolAddress]},
+         {contractName: minipoolAddress, fn: 'getUserDepositBalance', args: []},
+         {contractName: minipoolAddress, fn: 'getNodeDepositBalance', args: []}
+        ]),
+      'targetElBlock'
+    ).then(results => minipoolInfo.push(...results))
+  }
+
   let eligibleBorrowedEth = 0n
   let eligibleBondedEth = 0n
-  async function processMinipool(minipoolAddress) {
-    const minipoolStatus = parseInt(await cachedCall(minipoolAddress, 'getStatus', [], 'targetElBlock'))
-    log(5, `${minipoolAddress} status ${minipoolStatus}`)
-    if (minipoolStatus != stakingStatus) return
-    const pubkey = await cachedCall(
-      'rocketMinipoolManager', 'getMinipoolPubkey', [minipoolAddress], 'finalized')
+  for (const minipoolAddress of minipoolAddresses) {
+    const [minipoolStatus, pubkey, borrowedEth, bondedEth] = minipoolInfo.splice(0, 4)
+    if (minipoolStatus != stakingStatus) continue
     const validatorStatus = await socketCall(['beacon', 'getValidatorStatus', pubkey])
     if (getEligibility(validatorStatus.activation_epoch, validatorStatus.exit_epoch)) {
-      const borrowedEth = BigInt(await cachedCall(minipoolAddress, 'getUserDepositBalance', [], 'targetElBlock'))
       eligibleBorrowedEth += borrowedEth
-      const bondedEth = BigInt(await cachedCall(minipoolAddress, 'getNodeDepositBalance', [], 'targetElBlock'))
       eligibleBondedEth += bondedEth
     }
   }
-  const minipoolIndicesToProcess = Array.from(Array(parseInt(minipoolCount)).keys())
-  while (minipoolIndicesToProcess.length) {
-    log(5, `${minipoolIndicesToProcess.length} minipools left for ${nodeAddress}`)
-    // TODO: use multicall, at least to get the addresses, possibly also the pubkey. (status requires different blockTag)
-    await Promise.all(
-      minipoolIndicesToProcess.splice(0, MAX_CONCURRENT_MINIPOOLS)
-      .map(i => cachedCall('rocketMinipoolManager', 'getNodeMinipoolAt', [nodeAddress, i], 'targetElBlock')
-                .then(addr => processMinipool(addr)))
-    )
-  }
+  return {eligibleBorrowedEth, eligibleBondedEth, nodeStake, registrationTime}
+}
+
+async function processNodeRPL(nodeAddress) {
+  const {eligibleBorrowedEth, eligibleBondedEth, nodeStake, registrationTime} =
+    await getNodeMinipoolInfo(nodeAddress)
+
   const minCollateral = eligibleBorrowedEth * minCollateralFraction / ratio
   const maxCollateral = eligibleBondedEth * maxCollateralFraction / ratio
-  const nodeStake = BigInt(await cachedCall(
-    'rocketNodeStaking', 'getNodeRPLStake', [nodeAddress], 'targetElBlock')
-  )
   let nodeEffectiveStake = nodeStake < minCollateral ? 0n :
                            nodeStake < maxCollateral ? nodeStake : maxCollateral
-  const registrationTime = BigInt(await cachedCall(
-    'rocketNodeManager', 'getNodeRegistrationTime', [nodeAddress], 'finalized'))
   const nodeAge = targetElBlockTimestamp - registrationTime
   if (nodeAge < intervalTime)
     nodeEffectiveStake = nodeEffectiveStake * nodeAge / intervalTime
