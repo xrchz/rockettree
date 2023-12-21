@@ -33,6 +33,9 @@ export function socketCall(request) {
 export const cachedCall = (contractName, fn, args, blockTag) =>
   socketCall(['contract', contractName, fn, args, blockTag])
 
+export const multicall = (calls, blockTag) =>
+  socketCall(['multicall', calls, blockTag])
+
 const verbosity = parseInt(process.env.VERBOSITY) || 2
 export const log = (v, s) => verbosity >= v ? console.log(s) : undefined
 

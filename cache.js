@@ -193,6 +193,38 @@ const getContract = (name) => {
   return minipool
 }
 
+const multicallAddresses = new Map()
+multicallAddresses.set('mainnet', '0xeefBa1e63905eF1D7ACbA5a8513c70307C1cE441')
+multicallAddresses.set('goerli', '0x77dCa2C955b15e9dE4dbBCf1246B4B85b651e50e')
+
+const multicallContract = new ethers.Contract(
+  multicallAddresses.get(networkName),
+  ['function aggregate((address, bytes)[]) view returns (uint256, bytes[])'],
+  provider)
+log(3, `Using multicall ${await multicallContract.getAddress()}`)
+contracts.set('multicall', multicallContract)
+
+async function multicall(calls, blockTag) {
+  const aggregateArgs = []
+  for (const {contract, fn, args} of calls) {
+    aggregateArgs.push([
+      await contract.getAddress(),
+      contract.interface.encodeFunctionData(fn, args)
+    ])
+  }
+  const aggregateBytes = await multicallContract.aggregate(
+    aggregateArgs, {blockTag}
+  ).then(r => Array.from(r[1]))
+  const results = []
+  for (const [i, bytes] of aggregateBytes.entries()) {
+    const {contract, fn} = calls[i]
+    results.push(
+      contract.interface.decodeFunctionResult(fn, bytes)[0]
+    )
+  }
+  return results
+}
+
 const rocketStorageAddresses = new Map()
 rocketStorageAddresses.set('mainnet', '0x1d8f8f00cfa6758d7bE78336684788Fb0ee0Fa46')
 rocketStorageAddresses.set('goerli', '0xd8Cd47263414aFEca62d6e2a3917d6600abDceB3')
@@ -379,6 +411,13 @@ cachePort.on('message', async ({id, request: splits}) => {
     const contract = getContract(contractName)
     const blockTag = blockTagName == 'targetElBlock' ? targetElBlock : blockTagName
     const response = await cachedCall(contract, fn, args, blockTag)
+    cachePort.postMessage({id, response})
+  }
+  else if (splits.length == 3 && splits[0] == 'multicall') {
+    const [namedCalls, blockTagName] = splits.slice(1)
+    const blockTag = blockTagName == 'targetElBlock' ? targetElBlock : blockTagName
+    const calls = namedCalls.map(call => ({contract: getContract(call.contractName), ...call}))
+    const response = await multicall(calls, blockTag)
     cachePort.postMessage({id, response})
   }
   else if (splits.length == 3 && splits[0] == 'beacon') {
