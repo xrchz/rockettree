@@ -3,6 +3,35 @@ const dryRun = false
 const dbDir = process.env.DB_DIR || 'db'
 const db = open({path: dbDir})
 
+// TODO: to purge: @finalized rocketMinipoolManager.getNodeMinipoolAt calls
+// TODO: purge partial interval 15 keys
+
+/*
+const key = '/mainnet/attestations/231987'
+console.log((db.get(key)).get('0xF19710bFEE51C26d608d321a391BbF248c438B08'))
+*/
+
+// const key = '/mainnet/18325255/nodeSmoothingTimes/0x66770aBAA1a565E4876dEcc828c92b506616472a'
+// const key = '/mainnet/duties/231915'
+// console.log(JSON.stringify(db.get(key)))
+
+/*
+const blockNumber = 18293322
+// const key = `/mainnet/${blockNumber}/0x89F478E6Cc24f052103628f36598D4C14Da3D287/getNodeCount/`
+// const key = `/mainnet/${blockNumber}/0x89F478E6Cc24f052103628f36598D4C14Da3D287/getNodeAt/2494`
+const key = `/mainnet/${blockNumber}/0x6d010C43d4e96D74C422f2e27370AF48711B49bF/getNodeMinipoolAt/0`
+console.log(db.get(key))
+*/
+
+/*
+const blockToDelete = 18259203
+for (const { key, value } of db.getRange({start: `/mainnet/${blockToDelete}/`})) {
+  if (!key.startsWith(`/mainnet/${blockToDelete}/`)) break
+  console.log(`Deleted ${key} status: ${await db.remove(key)}`)
+}
+*/
+
+/*
 for (const { key, value } of db.getRange({start: '/mainnet/scores/'})) {
   if (!key.startsWith('/mainnet/scores/')) break
   console.log(`Processing ${key}`)
@@ -16,6 +45,30 @@ for (const { key, value } of db.getRange({start: '/mainnet/scores/'})) {
   })
   await db.put(key, biMap)
 }
+*/
+
+// const epoch = 231914
+// const epoch = 231915
+// const epoch = 231916
+// const epoch = 234841
+// const epoch = 234842
+// const epoch = 234843
+const startEpoch = 231985
+const endEpoch = 231988
+let epoch = startEpoch
+while (epoch <= endEpoch) {
+  let key = `/mainnet/attestations/${epoch}`
+  console.log(`Deleted ${key} status: ${await db.remove(key)}`)
+  key = `/mainnet/scores/${epoch}`
+  console.log(`Deleted ${key} status: ${await db.remove(key)}`)
+  epoch++
+}
+
+/*
+const map = db.get(key)
+console.log(map.size)
+*/
+
 
 /*
 const epoch = 225614

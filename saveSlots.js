@@ -8,8 +8,11 @@ const db = open({path: dbDir})
 // const startEpoch = 206715
 // const endEpoch = 213014
 // 13
-const startEpoch = 219315
-const endEpoch = 225614
+// const startEpoch = 219315
+// const endEpoch = 225614
+// 15 partial
+const startEpoch = 231915
+const endEpoch = 234842
 let epoch = startEpoch
 
 const minipoolAttestations = new Map()
