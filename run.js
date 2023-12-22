@@ -2,7 +2,7 @@ import 'dotenv/config'
 import { ethers } from 'ethers'
 import { EventEmitter } from 'node:events'
 import { Worker, MessageChannel } from 'node:worker_threads'
-import { provider, slotsPerEpoch, networkName, tryBigInt, makeLock,
+import { provider, slotsPerEpoch, networkName, tryBigInt, makeLock, rpip30Interval,
          log, cacheWorker, cacheUserPort, socketCall, cachedCall } from './lib.js'
 import { writeFileSync } from 'node:fs'
 
@@ -86,12 +86,22 @@ const timestamp = () => Intl.DateTimeFormat('en-GB',
   .format(new Date())
 
 const nodeEffectiveStakes = new Map()
+const nodeWeights = new Map()
 let totalEffectiveRplStake = 0n
+let totalNodeWeight = 0n
+const rpip30C = BigInt(Math.min(6, parseInt(currentIndex) - rpip30Interval + 1))
 
-function processNodeRPL({nodeAddress, nodeEffectiveStake}) {
-  if (typeof nodeAddress != 'string' || typeof nodeEffectiveStake != 'bigint') return
+function processNodeRPL({nodeAddress, nodeEffectiveStake, nodeWeight}) {
+  if (typeof nodeAddress != 'string' ||
+      typeof nodeEffectiveStake != 'bigint' ||
+      typeof nodeWeight != 'bigint')
+    return
   nodeEffectiveStakes.set(nodeAddress, nodeEffectiveStake)
   totalEffectiveRplStake += nodeEffectiveStake
+  if (rpip30Interval <= currentIndex) {
+    nodeWeights.set(nodeAddress, nodeWeight)
+    totalNodeWeight += nodeWeight
+  }
 }
 
 const nodeRPLWorkers = process.env.SKIP_RPL ? [] : makeWorkers('./nodeRPL.js')
@@ -110,6 +120,7 @@ await Promise.all(nodeRPLWorkers.map(data => data.promise))
 nodeRPLWorkers.forEach(data => data.worker.terminate())
 
 log(1, `totalEffectiveRplStake: ${totalEffectiveRplStake}`)
+log(1, `totalNodeWeight: ${totalNodeWeight}`)
 
 const numberOfMinipools = BigInt(
   await cachedCall('rocketMinipoolManager', 'getMinipoolCount', [], 'targetElBlock'))
@@ -117,10 +128,14 @@ const numberOfMinipools = BigInt(
 const nodeCollateralAmounts = new Map()
 let totalCalculatedCollateralRewards = 0n
 
-if (!process.env.SKIP_RPL) {
+if (!process.env.SKIP_RPL && totalEffectiveRplStake && (currentIndex < rpip30Interval || totalNodeWeight)) {
   for (const nodeAddress of nodeAddresses) {
     const nodeEffectiveStake = nodeEffectiveStakes.get(nodeAddress)
-    const nodeCollateralAmount = collateralRewards * nodeEffectiveStake / totalEffectiveRplStake
+    const nodeWeight = nodeWeights.get(nodeAddress)
+    const nodeCollateralAmount = currentIndex < rpip30Interval ?
+      collateralRewards * nodeEffectiveStake / totalEffectiveRplStake :
+      (collateralRewards * rpip30C * nodeWeight / (totalNodeWeight * 6n)) +
+      (collateralRewards * (6n - rpip30C) * nodeEffectiveStake / (totalEffectiveRplStake * 6n))
     nodeCollateralAmounts.set(nodeAddress, nodeCollateralAmount)
     totalCalculatedCollateralRewards += nodeCollateralAmount
   }
