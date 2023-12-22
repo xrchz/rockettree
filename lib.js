@@ -109,3 +109,27 @@ export function makeLock() {
     else locked = false
   }
 }
+
+export const oneEther = ethers.parseEther('1')
+const twoEther = 2n * oneEther
+
+function log2(x) {
+  // console.time(`log2(${x})`)
+  const exponent = BigInt(Math.floor(Math.log2(parseInt(x / oneEther))))
+  let result = exponent * oneEther
+  let y = x >> exponent
+  if (y == oneEther) return result
+  let delta = oneEther
+  for (const i of Array(60).keys()) {
+    delta = delta / 2n
+    y = (y * y) / oneEther
+    if (y >= twoEther) {
+      result = result + delta
+      y = y / 2n
+    }
+  }
+  // console.timeEnd(`log2(${x})`)
+  return result
+}
+
+export const ln = (x) => (log2(x) * oneEther) / 1442695040888963407n

@@ -1,4 +1,4 @@
-import { socketCall, cachedCall, multicall, stakingStatus, rpip30Interval, log } from './lib.js'
+import { socketCall, cachedCall, multicall, stakingStatus, rpip30Interval, oneEther, ln, log } from './lib.js'
 import { ethers } from 'ethers'
 import { parentPort } from 'node:worker_threads'
 
@@ -74,33 +74,10 @@ async function getNodeMinipoolInfo(nodeAddress) {
   return {eligibleBorrowedEth, eligibleBondedEth, nodeStake, registrationTime}
 }
 
-const oneEther = ethers.parseEther('1')
-const twoEther = 2n * oneEther
 const oneHundredEther = 100n * oneEther
 const thirteenEther = 13n * oneEther
 const fifteenEther = 15n * oneEther
 const thirteen6137Ether = ethers.parseEther('13.6137')
-
-function log2(x) {
-  // console.time(`log2(${x})`)
-  const exponent = BigInt(Math.floor(Math.log2(parseInt(x / oneEther))))
-  let result = exponent * oneEther
-  let y = x >> exponent
-  if (y == oneEther) return result
-  let delta = oneEther
-  for (const i of Array(60).keys()) {
-    delta *= 2n
-    y *= y / oneEther
-    if (y >= twoEther) {
-      result += delta
-      y /= 2n
-    }
-  }
-  // console.timeEnd(`log2(${x})`)
-  return result
-}
-
-const ln = (x) => log2(x) * oneEther / 1442695040888963407n
 
 function getNodeWeight(eligibleBorrowedEth, nodeStake) {
   if (currentIndex < rpip30Interval) return 0n
@@ -119,9 +96,11 @@ async function processNodeRPL(nodeAddress) {
 
   const minCollateral = eligibleBorrowedEth * minCollateralFraction / ratio
   const maxCollateral = eligibleBondedEth * maxCollateralFraction / ratio
-  let nodeEffectiveStake = nodeStake < minCollateral ? 0n :
-                           nodeStake < maxCollateral ? nodeStake : maxCollateral
-  let nodeWeight = getNodeWeight(eligibleBorrowedEth, nodeStake)
+  let [nodeEffectiveStake, nodeWeight] = [0n, 0n]
+  if (minCollateral <= nodeStake) {
+    nodeEffectiveStake = nodeStake < maxCollateral ? nodeStake : maxCollateral
+    nodeWeight = getNodeWeight(eligibleBorrowedEth, nodeStake)
+  }
   const nodeAge = targetElBlockTimestamp - registrationTime
   if (nodeAge < intervalTime) {
     nodeEffectiveStake = nodeEffectiveStake * nodeAge / intervalTime
