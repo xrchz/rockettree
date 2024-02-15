@@ -7,8 +7,7 @@ const MAX_CONCURRENT_MINIPOOLS = parseInt(process.env.MAX_CONCURRENT_MINIPOOLS) 
 const ratio = BigInt(await cachedCall('rocketNetworkPrices', 'getRPLPrice', [], 'targetElBlock'))
 const minCollateralFraction = BigInt(await cachedCall(
   'rocketDAOProtocolSettingsNode', 'getMinimumPerMinipoolStake', [], 'targetElBlock'))
-const maxCollateralFraction = BigInt(await cachedCall(
-  'rocketDAOProtocolSettingsNode', 'getMaximumPerMinipoolStake', [], 'targetElBlock'))
+const maxCollateralFraction = 150n * 10n ** 16n
 
 const targetSlotEpoch = await socketCall(['targetSlotEpoch'])
 const targetElBlockTimestamp = await socketCall(['targetElBlockTimestamp'])
