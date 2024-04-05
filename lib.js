@@ -57,6 +57,7 @@ export const slotsPerEpoch = 32n
 export const stakingStatus = 2
 
 export const rpip30Interval = 18 // TODO: for testnet too?
+export const denebEpoch = 269568 // TODO: ditto
 
 const max64 = 2n ** 64n
 export function uint256To64s(n, z) {

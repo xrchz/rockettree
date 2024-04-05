@@ -1,5 +1,5 @@
 import { parentPort, workerData, threadId } from 'node:worker_threads'
-import { socketCall, cachedCall, slotsPerEpoch, genesisTime, secondsPerSlot, log } from './lib.js'
+import { socketCall, cachedCall, denebEpoch, slotsPerEpoch, genesisTime, secondsPerSlot, log } from './lib.js'
 
 const nodeSmoothingTimes = new Map()
 async function getNodeSmoothingTimes(nodeAddress) {
@@ -47,7 +47,11 @@ async function processEpoch(epochToCheck) {
     for (const {slotNumber, committeeIndex, attested} of attestations) {
       const slotIndex = parseInt(slotNumber)
       if (slotToCheck <= slotIndex) continue
-      if (slotToCheck - slotIndex > parseInt(slotsPerEpoch)) continue
+      const epoch = parseInt(BigInt(slotIndex) / slotsPerEpoch)
+      if (epoch < denebEpoch)
+        if (slotToCheck - slotIndex > parseInt(slotsPerEpoch)) continue
+      else
+        if (BigInt(slotToCheck) / slotsPerEpoch > epoch + 1) continue
       const dutyKey = `${slotNumber},${committeeIndex}`
       if (!rocketPoolDuties.has(dutyKey)) continue
       const blockTime = genesisTime + secondsPerSlot * BigInt(slotIndex)
