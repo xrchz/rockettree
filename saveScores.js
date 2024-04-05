@@ -8,20 +8,25 @@ const db = open({path: dbDir})
 // const startEpoch = 206715
 // const endEpoch = 213014
 // 13
-const startEpoch = 219315
-const endEpoch = 225614
+// const startEpoch = 219315
+// const endEpoch = 225614
+// 21
+const startEpoch = 269715
+const endEpoch = 272456
 let epoch = startEpoch
 
 const minipoolScores = new Map()
 
 while (epoch <= endEpoch) {
-  console.log(`Importing ${epoch}`)
+  console.log(`Importing ${epoch}, ${minipoolScores.size} minipools in map`)
   const minipoolScoresForEpoch = db.get(`/mainnet/scores/${epoch++}`)
   for (const [minipoolAddress, minipoolScore] of minipoolScoresForEpoch.entries()) {
+    const score = BigInt(`0x${minipoolScore}`)
     minipoolScores.set(minipoolAddress,
       minipoolScores.has(minipoolAddress) ?
-      minipoolScores.get(minipoolAddress) + minipoolScore :
-      minipoolScore)
+      minipoolScores.get(minipoolAddress) + score :
+      score
+    )
   }
 }
 
@@ -33,5 +38,6 @@ for (const [minipoolAddress, minipoolScore] of minipoolScores.entries()) {
   await write(first ? '{\n' : ',\n')
   // console.log(`Writing ${minipoolAddress}`)
   await write(`"${minipoolAddress}":"${minipoolScore}"`)
+  first = false
 }
 str.end('\n}')
