@@ -431,6 +431,8 @@ cachePort.on('message', async ({id, request: splits}) => {
       cachePort.postMessage({id, response: await getCommittees(splits[2])})
     else if (splits[1] == 'checkSlotExists')
       cachePort.postMessage({id, response: await checkSlotExists(splits[2])})
+    else if (splits[1] == 'getBlockNumberFromSlot')
+      cachePort.postMessage({id, response: await getBlockNumberFromSlot(splits[2])})
     else
       cachePort.postMessage({id, error: `invalid request: unknown beacon request ${splits[1]}`})
   }
@@ -456,6 +458,10 @@ cachePort.on('message', async ({id, request: splits}) => {
     cachePort.postMessage({id, response: targetElBlockTimestamp})
   else if (splits.length == 1 && splits[0] == 'targetSlotEpoch')
     cachePort.postMessage({id, response: targetSlotEpoch})
+  else if (splits.length == 1 && splits[0] == 'targetBcSlot')
+    cachePort.postMessage({id, response: targetBcSlot})
+  else if (splits.length == 1 && splits[0] == 'targetElBlock')
+    cachePort.postMessage({id, response: targetElBlock})
   else if (splits.length == 1 && splits[0] == 'currentIndex')
     cachePort.postMessage({id, response: currentIndex})
   else if (splits.length == 1 && splits[0] == 'intervalTime')

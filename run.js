@@ -2,8 +2,8 @@ import 'dotenv/config'
 import { ethers } from 'ethers'
 import { EventEmitter } from 'node:events'
 import { Worker, MessageChannel } from 'node:worker_threads'
-import { provider, slotsPerEpoch, networkName, tryBigInt, makeLock, rpip30Interval,
-         log, cacheWorker, cacheUserPort, socketCall, cachedCall } from './lib.js'
+import { provider, slotsPerEpoch, secondsPerSlot, networkName, tryBigInt, makeLock, rpip30Interval,
+         log, cacheWorker, cacheUserPort, socketCall, cachedCall, genesisTime } from './lib.js'
 import { writeFileSync } from 'node:fs'
 
 const currentIndex = BigInt(await cachedCall('rocketRewardsPool', 'getRewardIndex', [], 'targetElBlock'))
@@ -152,6 +152,7 @@ const MAX_CONCURRENT_NODES = parseInt(process.env.MAX_CONCURRENT_NODES) || 10
 const targetElBlockTimestamp = await socketCall(['targetElBlockTimestamp'])
 const intervalTime = await socketCall(['intervalTime'])
 const targetSlotEpoch = await socketCall(['targetSlotEpoch'])
+const targetBcSlot = await socketCall(['targetBcSlot'])
 
 const oDaoCount = BigInt(await cachedCall('rocketDAONodeTrusted', 'getMemberCount', [], 'targetElBlock'))
 const oDaoIndices = Array.from(Array(parseInt(oDaoCount)).keys())
@@ -403,11 +404,13 @@ log(2, `totalMinipoolScore: ${totalMinipoolScore}`)
 const nodeRewards = new Map()
 function addNodeReward(nodeAddress, token, amount) {
   if (!amount) return
-  if (!nodeRewards.has(nodeAddress)) nodeRewards.set(nodeAddress, {ETH: 0n, RPL: 0n})
+  if (!nodeRewards.has(nodeAddress)) nodeRewards.set(nodeAddress,
+    {smoothing_pool_eth: 0n, collateral_rpl: 0n, oracle_dao_rpl: 0n}
+  )
   nodeRewards.get(nodeAddress)[token] += amount
 }
-nodeCollateralAmounts.forEach((v, k) => addNodeReward(k, 'RPL', v))
-oDaoAmounts.forEach((v, k) => addNodeReward(k, 'RPL', v))
+nodeCollateralAmounts.forEach((v, k) => addNodeReward(k, 'collateral_rpl', v))
+oDaoAmounts.forEach((v, k) => addNodeReward(k, 'oracle_dao_rpl', v))
 
 const smoothingPoolBalance = await socketCall(['smoothingPoolBalance'])
 const totalNodeOpShare = smoothingPoolBalance * totalMinipoolScore / (successfulAttestations * _100Percent)
@@ -417,7 +420,7 @@ log(2, `totalNodeOpShare: ${totalNodeOpShare}`)
 
 for (const [minipoolAddress, minipoolScore] of minipoolScores.entries()) {
   const minipoolEth = totalNodeOpShare * minipoolScore / totalMinipoolScore
-  addNodeReward(await cachedCall(minipoolAddress, 'getNodeAddress', [], 'finalized'), 'ETH', minipoolEth)
+  addNodeReward(await cachedCall(minipoolAddress, 'getNodeAddress', [], 'finalized'), 'smoothing_pool_eth', minipoolEth)
   totalEthForMinipools += minipoolEth
 }
 
@@ -438,17 +441,19 @@ function nodeMetadataHash(nodeAddress, totalRPL, totalETH) {
   return ethers.keccak256(data)
 }
 
-const nodeRewardsObject = {}
+// const nodeRewardsObject = {}
 const nodeHashes = new Map()
-nodeRewards.forEach(({ETH, RPL}, nodeAddress) => {
-  if (0 < ETH || 0 < RPL) {
-    nodeHashes.set(nodeAddress, nodeMetadataHash(nodeAddress, RPL, ETH))
-    nodeRewardsObject[nodeAddress] = {ETH, RPL}
+nodeRewards.forEach(({smoothing_pool_eth, collateral_rpl, oracle_dao_rpl}, nodeAddress) => {
+  if (0 < smoothing_pool_eth || 0 < collateral_rpl || 0 < oracle_dao_rpl) {
+    nodeHashes.set(nodeAddress, nodeMetadataHash(nodeAddress, collateral_rpl + oracle_dao_rpl, smoothing_pool_eth))
+    // nodeRewardsObject[nodeAddress] = {ETH, RPL}
   }
 })
+/*
 writeFileSync('node-rewards.json',
   JSON.stringify(nodeRewardsObject,
     (key, value) => typeof value === 'bigint' ? value.toString() : value))
+*/
 
 const nullHash = ethers.hexlify(new Uint8Array(32))
 const leafValues = Array.from(nodeHashes.values()).sort()
@@ -471,4 +476,96 @@ rowHashes.push(`interval: ${currentIndex}`)
 rowHashes.push(`start epoch: ${bnStartEpoch}`)
 rowHashes.push(`target epoch: ${targetSlotEpoch}`)
 writeFileSync('merkle-root.txt', rowHashes.join('\n'))
+
+let consensus_start_block = parseInt(bnStartEpoch * slotsPerEpoch)
+while (!(await socketCall(['beacon', 'checkSlotExists', consensus_start_block])))
+  consensus_start_block++
+
+const sszFileName = `rp-rewards-mainnet-${currentIndex}.ssz`
+
+const sszFile = {
+  magic: new Uint8Array([0x52, 0x50, 0x52, 0x54]),
+  rewards_file_version: 3,
+  ruleset_version: 9,
+  network: 1,
+  index: currentIndex,
+  start_time: genesisTime + bnStartEpoch * slotsPerEpoch * secondsPerSlot,
+  end_time: genesisTime + ((targetSlotEpoch + 1n) * slotsPerEpoch - 1n) * secondsPerSlot,
+  consensus_start_block,
+  consensus_end_block: targetBcSlot,
+  execution_start_block: await socketCall(['beacon', 'getBlockNumberFromSlot', consensus_start_block]),
+  execution_end_block: targetElBlock,
+  intervals_passed: 1,
+  merkle_root: rowHashes[0],
+  total_rewards: {
+    protocol_dao_rpl: actualPDaoRewards,
+    total_collateral_rpl: totalCalculatedCollateralRewards,
+    total_oracle_dao_rpl: totalCalculatedODaoRewards,
+    total_smoothing_pool_eth: smoothingPoolBalance,
+    pool_staker_smoothing_pool_eth: smoothingPoolBalance - totalNodeOpShare,
+    node_operator_smoothing_pool_eth: totalNodeOpShare,
+    total_node_weight: totalNodeWeight
+  },
+  network_rewards: [{
+    network: 0,
+    collateral_rpl: total_collateral_rpl,
+    oracle_dao_rpl: total_oracle_dao_rpl,
+    smoothing_pool_eth: total_smoothing_pool_eth
+  }],
+  node_rewards:
+    Array.from(nodeRewards.entries())
+    .map(([k, v]) => [Buffer.from(k.slice(2), 'hex'), v])
+    .sort(([k1], [k2]) => k1 - k2)
+    .map(([address, {collateral_rpl, oracle_dao_rpl, smoothing_pool_eth}]) =>
+      ({address, network: 0, collateral_rpl, oracle_dao_rpl, smoothing_pool_eth})
+    )
+}
+
+const serializeUint = (n, nbits) => Buffer.from(n.toString(16).padStart(2 * nbits / 8, '0'), 'hex').reverse()
+
+const serializationPieces = [
+  sszFile.magic,
+  serializeUint(sszFile.rewards_file_version,  64),
+  serializeUint(sszFile.ruleset_version,       64),
+  serializeUint(sszFile.network,               64),
+  serializeUint(sszFile.index,                 64),
+  serializeUint(sszFile.start_time,            64),
+  serializeUint(sszFile.end_time,              64),
+  serializeUint(sszFile.consensus_start_block, 64),
+  serializeUint(sszFile.consensus_end_block,   64),
+  serializeUint(sszFile.execution_start_block, 64),
+  serializeUint(sszFile.execution_end_block,   64),
+  serializeUint(sszFile.intervals_passed,      64),
+  sszFile.merkle_root,
+  serializeUint(sszFile.total_rewards.protocol_dao_rpl,                 256),
+  serializeUint(sszFile.total_rewards.total_collateral_rpl,             256),
+  serializeUint(sszFile.total_rewards.total_oracle_dao_rpl,             256),
+  serializeUint(sszFile.total_rewards.total_smoothing_pool_eth,         256),
+  serializeUint(sszFile.total_rewards.pool_staker_smoothing_pool_eth,   256),
+  serializeUint(sszFile.total_rewards.node_operator_smoothing_pool_eth, 256),
+  serializeUint(sszFile.total_rewards.total_node_weight,                256),
+]
+const fixedLength = serializationPieces.reduce((n, a) => n + a.length, 0) + 4 + 4
+serializationPieces.push(serializeUint(fixedLength, 32))
+const networkRewardLength = (64 + 3 * 256) / 8
+serializationPieces.push(serializeUint(fixedLength + networkRewardLength, 32))
+serializationPieces.push(
+  serializeUint(sszFile.network_rewards[0].network, 64),
+  serializeUint(sszFile.network_rewards[0].collateral_rpl,     256),
+  serializeUint(sszFile.network_rewards[0].oracle_dao_rpl,     256),
+  serializeUint(sszFile.network_rewards[0].smoothing_pool_eth, 256)
+)
+for (const {address, network, collateral_rpl, oracle_dao_rpl, smoothing_pool_eth} of sszFile.node_rewards) {
+  serializationPieces.push(
+    address,
+    serializeUint(network, 64),
+    serializeUint(collateral_rpl,     256),
+    serializeUint(oracle_dao_rpl,     256),
+    serializeUint(smoothing_pool_eth, 256)
+  )
+}
+
+const ssz = Buffer.concat(serializationPieces)
+writeFileSync(sszFileName, ssz)
+
 await closeDb
