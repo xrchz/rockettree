@@ -153,6 +153,7 @@ const targetElBlockTimestamp = await socketCall(['targetElBlockTimestamp'])
 const intervalTime = await socketCall(['intervalTime'])
 const targetSlotEpoch = await socketCall(['targetSlotEpoch'])
 const targetBcSlot = await socketCall(['targetBcSlot'])
+const targetElBlock = await socketCall(['targetElBlock'])
 
 const oDaoCount = BigInt(await cachedCall('rocketDAONodeTrusted', 'getMemberCount', [], 'targetElBlock'))
 const oDaoIndices = Array.from(Array(parseInt(oDaoCount)).keys())
@@ -426,10 +427,6 @@ for (const [minipoolAddress, minipoolScore] of minipoolScores.entries()) {
 
 log(2, `totalEthForMinipools: ${totalEthForMinipools}`)
 
-const closeDb = socketCall(['close'])
-cacheUserPort.close()
-cacheWorker.unref()
-
 function nodeMetadataHash(nodeAddress, totalRPL, totalETH) {
   const data = new Uint8Array(20 + 32 + 32 + 32)
   data.set(ethers.getBytes(nodeAddress), 0)
@@ -482,6 +479,7 @@ while (!(await socketCall(['beacon', 'checkSlotExists', consensus_start_block]))
   consensus_start_block++
 
 const sszFileName = `rp-rewards-mainnet-${currentIndex}.ssz`
+log(2, `Generating ssz file ${sszFileName}...`)
 
 const sszFile = {
   magic: new Uint8Array([0x52, 0x50, 0x52, 0x54]),
@@ -496,7 +494,7 @@ const sszFile = {
   execution_start_block: await socketCall(['beacon', 'getBlockNumberFromSlot', consensus_start_block]),
   execution_end_block: targetElBlock,
   intervals_passed: 1,
-  merkle_root: rowHashes[0],
+  merkle_root: Buffer.from(rowHashes[0].slice(2), 'hex'),
   total_rewards: {
     protocol_dao_rpl: actualPDaoRewards,
     total_collateral_rpl: totalCalculatedCollateralRewards,
@@ -508,9 +506,9 @@ const sszFile = {
   },
   network_rewards: [{
     network: 0,
-    collateral_rpl: total_collateral_rpl,
-    oracle_dao_rpl: total_oracle_dao_rpl,
-    smoothing_pool_eth: total_smoothing_pool_eth
+    collateral_rpl: totalCalculatedCollateralRewards,
+    oracle_dao_rpl: totalCalculatedODaoRewards,
+    smoothing_pool_eth: smoothingPoolBalance
   }],
   node_rewards:
     Array.from(nodeRewards.entries())
@@ -520,6 +518,10 @@ const sszFile = {
       ({address, network: 0, collateral_rpl, oracle_dao_rpl, smoothing_pool_eth})
     )
 }
+
+const closeDb = socketCall(['close'])
+cacheUserPort.close()
+cacheWorker.unref()
 
 const serializeUint = (n, nbits) => Buffer.from(n.toString(16).padStart(2 * nbits / 8, '0'), 'hex').reverse()
 
@@ -567,5 +569,6 @@ for (const {address, network, collateral_rpl, oracle_dao_rpl, smoothing_pool_eth
 
 const ssz = Buffer.concat(serializationPieces)
 writeFileSync(sszFileName, ssz)
+log(2, `ssz file of ${ssz.length} bytes written`)
 
 await closeDb
