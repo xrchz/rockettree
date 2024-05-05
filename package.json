@@ -8,7 +8,7 @@
     "dotenv": "16",
     "ethers": "6",
     "lmdb": "2",
-    "ipfs-unixfs-importer": "11",
+    "ipfs-unixfs-importer": "15",
     "blockstore-core": "4"
   }
 }
