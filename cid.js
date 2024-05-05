@@ -2,9 +2,10 @@ import { importer } from 'ipfs-unixfs-importer'
 import { MemoryBlockstore } from 'blockstore-core'
 import { readFileSync } from 'node:fs'
 
-const sources = [
-  {path: process.env.FILENAME, content: readFileSync(process.env.FILENAME)}
-]
+const sources = [{
+  path: process.env.FILENAME.split('/').at(-1),
+  content: readFileSync(process.env.FILENAME)
+}]
 const options = {
   wrapWithDirectory: true,
   reduceSingleLeafToSelf: true,
