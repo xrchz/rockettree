@@ -1,5 +1,6 @@
 import { importer } from 'ipfs-unixfs-importer'
 import { MemoryBlockstore } from 'blockstore-core'
+import { fixedSize } from 'ipfs-unixfs-importer/chunker'
 import { readFileSync } from 'node:fs'
 
 const sources = [{
@@ -11,6 +12,7 @@ const options = {
   reduceSingleLeafToSelf: true,
   shardSplitThresholdBytes: 4 * 1024 * 1024,
   rawLeaves: true,
+  chunker: fixedSize({chunkSize: 1024 * 1024}),
   cidVersion: 1
 }
 const blockstore = new MemoryBlockstore()
