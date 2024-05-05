@@ -493,27 +493,27 @@ const sszFile = {
   consensus_end_block: targetBcSlot,
   execution_start_block: await socketCall(['beacon', 'getBlockNumberFromSlot', consensus_start_block]),
   execution_end_block: targetElBlock,
-  intervals_passed: 1,
+  intervals_passed: tryBigInt(process.env.OVERRIDE_TARGET_EPOCH) ? 0 : 1,
   merkle_root: Buffer.from(rowHashes[0].slice(2), 'hex'),
   total_rewards: {
     protocol_dao_rpl: actualPDaoRewards,
     total_collateral_rpl: totalCalculatedCollateralRewards,
     total_oracle_dao_rpl: totalCalculatedODaoRewards,
     total_smoothing_pool_eth: smoothingPoolBalance,
-    pool_staker_smoothing_pool_eth: smoothingPoolBalance - totalNodeOpShare,
-    node_operator_smoothing_pool_eth: totalNodeOpShare,
+    pool_staker_smoothing_pool_eth: smoothingPoolBalance - totalEthForMinipools,
+    node_operator_smoothing_pool_eth: totalEthForMinipools,
     total_node_weight: totalNodeWeight
   },
   network_rewards: [{
     network: 0,
     collateral_rpl: totalCalculatedCollateralRewards,
     oracle_dao_rpl: totalCalculatedODaoRewards,
-    smoothing_pool_eth: smoothingPoolBalance
+    smoothing_pool_eth: totalEthForMinipools
   }],
   node_rewards:
     Array.from(nodeRewards.entries())
     .map(([k, v]) => [Buffer.from(k.slice(2), 'hex'), v])
-    .sort(([k1], [k2]) => k1 - k2)
+    .sort(([k1], [k2]) => Buffer.compare(k1, k2))
     .map(([address, {collateral_rpl, oracle_dao_rpl, smoothing_pool_eth}]) =>
       ({address, network: 0, collateral_rpl, oracle_dao_rpl, smoothing_pool_eth})
     )
