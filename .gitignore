@@ -1,5 +1,6 @@
-node-rewards.json
-merkle-root.txt
+*.json
+*.txt
+*.log
 node_modules
 .env
 db
