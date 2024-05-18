@@ -193,6 +193,244 @@ const getContract = (name) => {
   return minipool
 }
 
+const rocketStorageAddresses = new Map()
+rocketStorageAddresses.set('mainnet', '0x1d8f8f00cfa6758d7bE78336684788Fb0ee0Fa46')
+rocketStorageAddresses.set('goerli', '0xd8Cd47263414aFEca62d6e2a3917d6600abDceB3')
+
+const rocketRewardsPoolABI = [
+  'function getClaimIntervalTimeStart() view returns (uint256)',
+  'function getClaimIntervalTime() view returns (uint256)',
+  'function getPendingRPLRewards() view returns (uint256)',
+  'function getClaimingContractPerc(string) view returns (uint256)',
+  'function getRewardIndex() view returns (uint256)',
+  // struct RewardSubmission {uint256 rewardIndex; uint256 executionBlock; uint256 consensusBlock; bytes32 merkleRoot; string merkleTreeCID; uint256 intervalsPassed; uint256 treasuryRPL; uint256[] trustedNodeRPL; uint256[] nodeRPL; uint256[] nodeETH; uint256 userETH;}
+  'event RewardSnapshot(uint256 indexed rewardIndex, '+
+   '(uint256, uint256, uint256, bytes32, string,' +
+   ' uint256, uint256, uint256[], uint256[], uint256[], uint256) submission, ' +
+   'uint256 intervalStartTime, uint256 intervalEndTime, uint256 time)'
+]
+
+const rocketNodeManagerABI = [
+  'function getNodeCount() view returns (uint256)',
+  'function getNodeAt(uint256) view returns (address)',
+  'function getNodeRegistrationTime(address) view returns (uint256)',
+  'function getSmoothingPoolRegistrationState(address) view returns (bool)',
+  'function getSmoothingPoolRegistrationChanged(address) view returns (uint256)'
+]
+
+const rocketMinipoolManagerABI = [
+  'function getNodeMinipoolAt(address, uint256) view returns (address)',
+  'function getNodeMinipoolCount(address) view returns (uint256)',
+  'function getMinipoolPubkey(address) view returns (bytes)',
+  'function getMinipoolCount() view returns (uint256)'
+]
+
+const minipoolABI = [
+  'function getStatus() view returns (uint8)',
+  'function getStatusTime() view returns (uint256)',
+  'function getUserDepositBalance() view returns (uint256)',
+  'function getNodeDepositBalance() view returns (uint256)',
+  'function getNodeFee() view returns (uint256)',
+  'function getNodeAddress() view returns (address)'
+]
+
+const multicaller = new MulticallProvider(provider)
+
+const MAX_CALLS = 10
+
+const getELState = async (blockTag) => {
+  const rocketStorage = new ethers.Contract(
+    rocketStorageAddresses.get(networkName),
+    ['function getAddress(bytes32) view returns (address)'], multicaller)
+  const getRocketAddress = (name) =>
+    rocketStorage['getAddress(bytes32)'](ethers.id(`contract.address${name}`), {blockTag})
+  const contractInfo = [
+    ['rocketRewardsPool', rocketRewardsPoolABI],
+    ['rocketNodeManager', rocketNodeManagerABI],
+    ['rocketNodeStaking', ['function getNodeRPLStake(address) view returns (uint256)']],
+    ['rocketMinipoolManager', rocketMinipoolManagerABI],
+    ['rocketNetworkPrices', ['function getRPLPrice() view returns (uint256)']],
+    ['rocketDAOProtocolSettingsNode', ['function getMinimumPerMinipoolStake() view returns (uint256)',
+                                       'function getMaximumPerMinipoolStake() view returns (uint256)']],
+    ['rocketDAONodeTrusted', ['function getMemberCount() view returns (uint256)',
+                              'function getMemberAt(uint256) view returns (address)',
+                              'function getMemberJoinedTime(address) view returns (uint256)']],
+    ['rocketNetworkPenalties', ['function getPenaltyCount(address) view returns (uint256)']],
+    ['rocketMinipoolBondReducer', ['function getLastBondReductionPrevValue(address) view returns (uint256)',
+                                   'function getLastBondReductionPrevNodeFee(address) view returns (uint256)',
+                                   'function getLastBondReductionTime(address) view returns (uint256)']]
+  ]
+  const contracts = new Map()
+  await Promise.all(contractInfo.map(([name, abi]) =>
+    getRocketAddress(name).then(address =>
+      contracts.set(name, new ethers.Contract(address, abi, multicaller))
+    )
+  ))
+  const rocketDAONodeTrusted = contracts.get('rocketDAONodeTrusted')
+  const rocketNodeManager = contracts.get('rocketNodeManager')
+  const rocketMinipoolManager = contracts.get('rocketMinipoolManager')
+  const rocketNetworkPenalties = contracts.get('rocketNetworkPenalties')
+  const rocketMinipoolBondReducer = contracts.get('rocketMinipoolBondReducer')
+  const rocketNodeStaking = contracts.get('rocketNodeStaking')
+  const state = {
+    'rocketRewardsPool': {
+      'getClaimIntervalTimeStart': {'': null},
+      'getClaimIntervalTime': {'': null},
+      'getRewardIndex': {'': null},
+      'getPendingRPLRewards': {'': null},
+      'getClaimingContractPerc': {
+        'rocketClaimNode': null,
+        'rocketClaimTrustedNode': null,
+        'rocketClaimDAO': null
+      },
+    },
+    'rocketDAONodeTrusted': {
+      'getMemberCount': {'': null},
+      'getMemberAt': {},
+      'getMemberJoinedTime': {}
+    },
+    'rocketNodeManager': {
+      'getNodeCount': {'': null},
+      'getNodeAt': {},
+      'getNodeRegistrationTime': {},
+      'getSmoothingPoolRegistrationState': {},
+      'getSmoothingPoolRegistrationChanged': {}
+    },
+    'rocketMinipoolManager': {
+      'getMinipoolCount': {'': null},
+      'getNodeMinipoolCount': {},
+      'getNodeMinipoolAt': {},
+      'getMinipoolPubkey': {}
+    },
+    'rocketNetworkPrices': {
+      'getRPLPrice': {'': null}
+    },
+    'rocketDAOProtocolSettingsNode': {
+      'getMinimumPerMinipoolStake': {'': null}
+    },
+    'rocketMinipoolBondReducer': {
+      'getLastBondReductionPrevValue': {},
+      'getLastBondReductionPrevNodeFee': {},
+      'getLastBondReductionTime': {}
+    },
+    'rocketNetworkPenalties': {
+      'getPenaltyCount': {}
+    },
+    'rocketNodeStaking': {
+      'getNodeRPLStake': {},
+    }
+  }
+  const promises = []
+  const drainPromises = () => Promise.all(promises.splice(0, promises.length))
+  const enqueuePromises = async (...p) => {
+    if (promises.length + p.length > MAX_CALLS)
+      await drainPromises()
+    promises.push(...p)
+  }
+  for (const [name, data] of Object.entries(state)) {
+    const c = contracts.get(name)
+    for (const [fn, calls] of Object.entries(data))
+      for (const args of Object.keys(calls))
+        await enqueuePromises(
+          c[fn](...(args ? [args, {blockTag}] : [{blockTag}])).then(r =>
+            calls[args] = r
+          )
+        )
+  }
+  await drainPromises()
+  const nodeCount = state['rocketNodeManager']['getNodeCount']['']
+  for (let i = 0; i < nodeCount; i++)
+    await enqueuePromises(
+      rocketNodeManager['getNodeAt'](i, {blockTag}).then(r =>
+        state['rocketNodeManager']['getNodeAt'][i] = r
+      )
+    )
+  const memberCount = state['rocketDAONodeTrusted']['getMemberCount']['']
+  for (let i = 0; i < memberCount; i++)
+    await enqueuePromises(
+      rocketDAONodeTrusted['getMemberAt'](i, {blockTag}).then(r =>
+        state['rocketDAONodeTrusted']['getMemberAt'][i] = r
+      )
+    )
+  await drainPromises()
+  const nodeAddresses = []
+  for (let i = 0; i < nodeCount; i++)
+    nodeAddresses.push(state['rocketNodeManager']['getNodeAt'][i])
+  const members = []
+  for (let i = 0; i < memberCount; i++)
+    members.push(state['rocketDAONodeTrusted']['getMemberAt'][i])
+  for (const member of members)
+    enqueuePromises(
+      rocketDAONodeTrusted['getMemberJoinedTime'](member, {blockTag}).then(r =>
+        state['rocketDAONodeTrusted']['getMemberJoinedTime'][member] = r
+      )
+    )
+  for (const nodeAddress of nodeAddresses)
+    enqueuePromises(
+      rocketMinipoolManager.getNodeMinipoolCount(nodeAddress, {blockTag}).then(r =>
+        state['rocketMinipoolManager']['getNodeMinipoolCount'][nodeAddress] = r
+      ),
+      rocketNodeStaking.getNodeRPLStake(nodeAddress, {blockTag}).then(r =>
+        state['rocketNodeStaking']['getNodeRPLStake'][nodeAddress] = r
+      ),
+      rocketNodeManager.getNodeRegistrationTime(nodeAddress, {blockTag}).then(r =>
+        state['rocketNodeManager']['getNodeRegistrationTime'][nodeAddress] = r
+      ),
+      rocketNodeManager.getSmoothingPoolRegistrationState(nodeAddress, {blockTag}).then(r =>
+        state['rocketNodeManager']['getSmoothingPoolRegistrationState'][nodeAddress] = r
+      ),
+      rocketNodeManager.getSmoothingPoolRegistrationChanged(nodeAddress, {blockTag}).then(r =>
+        state['rocketNodeManager']['getSmoothingPoolRegistrationChanged'][nodeAddress] = r
+      )
+    )
+  await drainPromises()
+  for (const nodeAddress of nodeAddresses) {
+    const nodeMinipoolCount = state['rocketMinipoolManager']['getNodeMinipoolCount'][nodeAddress]
+    for (let i = 0; i < nodeMinipoolCount; i++)
+      await enqueuePromises(
+        rocketMinipoolManager.getNodeMinipoolAt(nodeAddress, i, {blockTag}).then(r =>
+          state['rocketMinipoolManager']['getNodeMinipoolAt'][`${nodeAddress},${i}`] = r
+        )
+      )
+  }
+  await drainPromises()
+  const minipools = []
+  for (const nodeAddress of nodeAddresses) {
+    const nodeMinipoolCount = state['rocketMinipoolManager']['getNodeMinipoolCount'][nodeAddress]
+    for (let i = 0; i < nodeMinipoolCount; i++)
+      minipools.push(state['rocketMinipoolManager']['getNodeMinipoolAt'][`${nodeAddress},${i}`])
+  }
+  for (const minipool of minipools) {
+    const c = new ethers.Contract(minipool, minipoolABI, multicaller)
+    state[minipool] = {}
+    await enqueuePromises(
+      c.getNodeAddress({blockTag}).then(r => state[minipool]['getNodeAddress'] = r),
+      c.getStatus({blockTag}).then(r => state[minipool]['getStatus'] = r),
+      c.getStatusTime({blockTag}).then(r => state[minipool]['getStatusTime'] = r),
+      c.getUserDepositBalance({blockTag}).then(r => state[minipool]['getUserDepositBalance'] = r),
+      c.getNodeDepositBalance({blockTag}).then(r => state[minipool]['getNodeDepositBalance'] = r),
+      c.getNodeFee({blockTag}).then(r => state[minipool]['getNodeFee'] = r),
+      rocketMinipoolManager.getMinipoolPubkey(minipool, {blockTag}).then(r =>
+        state['rocketMinipoolManager']['getMinipoolPubkey'][minipool] = r
+      ),
+      rocketNetworkPenalties.getPenaltyCount(minipool, {blockTag}).then(r =>
+        state['rocketNetworkPenalties']['getPenaltyCount'][minipool] = r
+      ),
+      rocketMinipoolBondReducer.getLastBondReductionPrevValue(minipool, {blockTag}).then(r =>
+        state['rocketMinipoolBondReducer']['getLastBondReductionPrevValue'][minipool] = r
+      ),
+      rocketMinipoolBondReducer.getLastBondReductionPrevNodeFee(minipool, {blockTag}).then(r =>
+        state['rocketMinipoolBondReducer']['getLastBondReductionPrevNodeFee'][minipool] = r
+      ),
+      rocketMinipoolBondReducer.getLastBondReductionTime(minipool, {blockTag}).then(r =>
+        state['rocketMinipoolBondReducer']['getLastBondReductionTime'][minipool] = r
+      )
+    )
+  }
+  await drainPromises()
+  return state
+}
+
 const multicallAddresses = new Map()
 multicallAddresses.set('mainnet', '0xeefBa1e63905eF1D7ACbA5a8513c70307C1cE441')
 multicallAddresses.set('goerli', '0x77dCa2C955b15e9dE4dbBCf1246B4B85b651e50e')
@@ -225,10 +463,6 @@ async function multicall(calls, blockTag) {
   return results
 }
 
-const rocketStorageAddresses = new Map()
-rocketStorageAddresses.set('mainnet', '0x1d8f8f00cfa6758d7bE78336684788Fb0ee0Fa46')
-rocketStorageAddresses.set('goerli', '0xd8Cd47263414aFEca62d6e2a3917d6600abDceB3')
-
 const rocketStorage = new ethers.Contract(
   rocketStorageAddresses.get(networkName),
   ['function getAddress(bytes32) view returns (address)'], provider)
@@ -240,17 +474,7 @@ const getRocketAddress = (name, blockTag) =>
 
 const rocketRewardsPool = new ethers.Contract(
   await getRocketAddress('rocketRewardsPool', startBlock),
-  ['function getClaimIntervalTimeStart() view returns (uint256)',
-   'function getClaimIntervalTime() view returns (uint256)',
-   'function getPendingRPLRewards() view returns (uint256)',
-   'function getClaimingContractPerc(string) view returns (uint256)',
-   'function getRewardIndex() view returns (uint256)',
-   // struct RewardSubmission {uint256 rewardIndex; uint256 executionBlock; uint256 consensusBlock; bytes32 merkleRoot; string merkleTreeCID; uint256 intervalsPassed; uint256 treasuryRPL; uint256[] trustedNodeRPL; uint256[] nodeRPL; uint256[] nodeETH; uint256 userETH;}
-   'event RewardSnapshot(uint256 indexed rewardIndex, '+
-    '(uint256, uint256, uint256, bytes32, string,' +
-    ' uint256, uint256, uint256[], uint256[], uint256[], uint256) submission, ' +
-    'uint256 intervalStartTime, uint256 intervalEndTime, uint256 time)'
-  ],
+  rocketRewardsPoolABI,
   provider)
 contracts.set('rocketRewardsPool', rocketRewardsPool)
 
@@ -305,17 +529,17 @@ log(1, `targetBcSlot: ${targetBcSlot}`)
 const targetElBlock = await getBlockNumberFromSlot(targetBcSlot)
 log(1, `targetElBlock: ${targetElBlock}`)
 
+log(3, `fetching EL state...`)
+const elState = await getELState(targetElBlock)
+log(3, `fetched EL state`)
+log(3, `EL state keys: ${Object.keys(elState)}`)
+
 const targetElBlockTimestamp = await provider.getBlock(targetElBlock).then(b => BigInt(b.timestamp))
 log(2, `targetElBlockTimestamp: ${targetElBlockTimestamp}`)
 
 const rocketNodeManager = new ethers.Contract(
   await getRocketAddress('rocketNodeManager', targetElBlock),
-  ['function getNodeCount() view returns (uint256)',
-   'function getNodeAt(uint256) view returns (address)',
-   'function getNodeRegistrationTime(address) view returns (uint256)',
-   'function getSmoothingPoolRegistrationState(address) view returns (bool)',
-   'function getSmoothingPoolRegistrationChanged(address) view returns (uint256)'
-  ],
+  rocketNodeManagerABI,
   provider)
 contracts.set('rocketNodeManager', rocketNodeManager)
 
@@ -327,11 +551,7 @@ contracts.set('rocketNodeStaking', rocketNodeStaking)
 
 const rocketMinipoolManager = new ethers.Contract(
   await getRocketAddress('rocketMinipoolManager', targetElBlock),
-  ['function getNodeMinipoolAt(address, uint256) view returns (address)',
-   'function getNodeMinipoolCount(address) view returns (uint256)',
-   'function getMinipoolPubkey(address) view returns (bytes)',
-   'function getMinipoolCount() view returns (uint256)'
-  ],
+  rocketMinipoolManagerABI,
   provider)
 contracts.set('rocketMinipoolManager', rocketMinipoolManager)
 
@@ -406,11 +626,12 @@ const dataKeys = ['duties', 'attestations', 'scores']
 
 const cachePort = workerData
 cachePort.on('message', async ({id, request: splits}) => {
-  if (splits.length == 5 && splits[0] == 'contract') {
-    const [contractName, fn, args, blockTagName] = splits.slice(1)
-    const contract = getContract(contractName)
-    const blockTag = blockTagName == 'targetElBlock' ? targetElBlock : blockTagName
-    const response = await cachedCall(contract, fn, args, blockTag)
+  if (splits.length >= 3 && splits.length <= 4 && splits[0] == 'elState') {
+    const [contractName, fn, args] = splits.slice(1)
+    console.log(`Trying elState ${contractName} ${fn} ${args}`)
+    const data = elState[contractName][fn]
+    console.log(`For elState ${contractName} ${fn} got data with keys ${data ? Object.keys(data) : 'actually no data'}`)
+    const response = contractName.startsWith('0x') ? data : data[args || '']
     cachePort.postMessage({id, response})
   }
   else if (splits.length == 3 && splits[0] == 'multicall') {
