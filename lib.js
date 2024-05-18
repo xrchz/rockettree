@@ -30,9 +30,6 @@ export function socketCall(request) {
   return promise
 }
 
-export const cachedCall = (contractName, fn, args, blockTag) =>
-  socketCall(['contract', contractName, fn, args, blockTag])
-
 export const multicall = (calls, blockTag) =>
   socketCall(['multicall', calls, blockTag])
 

@@ -391,7 +391,7 @@ async function nodeSmoothingTimes(nodeAddress, blockTag, times) {
   }
 }
 
-const currentIndex = await cachedCall(rocketRewardsPool, 'getRewardIndex', [], targetElBlock)
+const currentIndex = elState['rocketRewardsPool']['getRewardIndex']['']
 const previousIntervalEventFilter = rocketRewardsPool.filters.RewardSnapshot(currentIndex - 1n)
 const intervalBlocksApprox = intervalTime / 12n
 const foundEvents = await rocketRewardsPool.queryFilter(previousIntervalEventFilter, targetElBlock - intervalBlocksApprox, targetElBlock)

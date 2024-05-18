@@ -1,15 +1,15 @@
-import { cachedCall, genesisTime, secondsPerSlot, log } from './lib.js'
+import { genesisTime, socketCall, secondsPerSlot, log } from './lib.js'
 import { parentPort } from 'node:worker_threads'
 
 async function processAttestation({minipoolAddress, slotIndex}) {
-  const currentBond = BigInt(await cachedCall(minipoolAddress, 'getNodeDepositBalance', [], 'targetElBlock'))
-  const currentFee = BigInt(await cachedCall(minipoolAddress, 'getNodeFee', [], 'targetElBlock'))
-  const previousBond = BigInt(await cachedCall(
-    'rocketMinipoolBondReducer', 'getLastBondReductionPrevValue', [minipoolAddress], 'targetElBlock'))
-  const previousFee = BigInt(await cachedCall(
-    'rocketMinipoolBondReducer', 'getLastBondReductionPrevNodeFee', [minipoolAddress], 'targetElBlock'))
-  const lastReduceTime = BigInt(await cachedCall(
-    'rocketMinipoolBondReducer', 'getLastBondReductionTime', [minipoolAddress], 'targetElBlock'))
+  const currentBond = BigInt(await socketCall(['elState', minipoolAddress, 'getNodeDepositBalance']))
+  const currentFee = BigInt(await socketCall(['elState', minipoolAddress, 'getNodeFee']))
+  const previousBond = BigInt(await socketCall(
+    ['elState', 'rocketMinipoolBondReducer', 'getLastBondReductionPrevValue', minipoolAddress]))
+  const previousFee = BigInt(await socketCall(
+    ['elState', 'rocketMinipoolBondReducer', 'getLastBondReductionPrevNodeFee', minipoolAddress]))
+  const lastReduceTime = BigInt(await socketCall(
+    ['elState', 'rocketMinipoolBondReducer', 'getLastBondReductionTime', minipoolAddress]))
   const blockTime = genesisTime + secondsPerSlot * BigInt(slotIndex)
   const {bond, fee} = lastReduceTime > 0 && lastReduceTime > blockTime ?
     {bond: previousBond, fee: previousFee} :

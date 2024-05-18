@@ -1,5 +1,7 @@
 import { parentPort, workerData, threadId } from 'node:worker_threads'
-import { socketCall, cachedCall, denebEpoch, slotsPerEpoch, genesisTime, secondsPerSlot, log } from './lib.js'
+import { socketCall, denebEpoch, slotsPerEpoch, genesisTime, secondsPerSlot, log } from './lib.js'
+
+const currentIndex = BigInt(await socketCall(['elState', 'rocketRewardsPool', 'getRewardIndex']))
 
 const nodeSmoothingTimes = new Map()
 async function getNodeSmoothingTimes(nodeAddress) {
@@ -58,10 +60,10 @@ async function processEpoch(epochToCheck) {
       // TODO: try as Promise.all?
       for (const {position, minipoolAddress} of rocketPoolDuties.get(dutyKey)) {
         if (!attested[position]) continue
-        const nodeAddress = await cachedCall(minipoolAddress, 'getNodeAddress', [], 'finalized')
+        const nodeAddress = await socketCall(['elState', minipoolAddress, 'getNodeAddress'])
         const {optInTime, optOutTime} = await getNodeSmoothingTimes(nodeAddress)
         if (blockTime < optInTime || blockTime > optOutTime) continue
-        const statusTime = BigInt(await cachedCall(minipoolAddress, 'getStatusTime', [], 'finalized'))
+        const statusTime = BigInt(await socketCall(['elState', minipoolAddress, 'getStatusTime']))
         if (blockTime < statusTime) continue
         parentPort.postMessage({minipoolAddress, slotIndex})
       }

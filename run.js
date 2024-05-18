@@ -3,20 +3,20 @@ import { ethers } from 'ethers'
 import { EventEmitter } from 'node:events'
 import { Worker, MessageChannel } from 'node:worker_threads'
 import { provider, slotsPerEpoch, secondsPerSlot, networkName, tryBigInt, makeLock, rpip30Interval,
-         log, cacheWorker, cacheUserPort, socketCall, cachedCall, genesisTime } from './lib.js'
+         log, cacheWorker, cacheUserPort, socketCall, genesisTime } from './lib.js'
 import { writeFileSync } from 'node:fs'
 
-const currentIndex = BigInt(await cachedCall('rocketRewardsPool', 'getRewardIndex', [], 'targetElBlock'))
+const currentIndex = BigInt(await socketCall(['elState', 'rocketRewardsPool', 'getRewardIndex']))
 log(2, `currentIndex: ${currentIndex}`)
 
-const pendingRewards = BigInt(await cachedCall(
-  'rocketRewardsPool', 'getPendingRPLRewards', [], 'targetElBlock'))
-const collateralPercent = BigInt(await cachedCall(
-  'rocketRewardsPool', 'getClaimingContractPerc', ['rocketClaimNode'], 'targetElBlock'))
-const oDaoPercent = BigInt(await cachedCall(
-  'rocketRewardsPool', 'getClaimingContractPerc', ['rocketClaimTrustedNode'], 'targetElBlock'))
-const pDaoPercent = BigInt(await cachedCall(
-  'rocketRewardsPool', 'getClaimingContractPerc', ['rocketClaimDAO'], 'targetElBlock'))
+const pendingRewards = BigInt(await socketCall(
+  ['elState', 'rocketRewardsPool', 'getPendingRPLRewards']))
+const collateralPercent = BigInt(await socketCall(
+  ['elState', 'rocketRewardsPool', 'getClaimingContractPerc', 'rocketClaimNode']))
+const oDaoPercent = BigInt(await socketCall(
+  ['elState', 'rocketRewardsPool', 'getClaimingContractPerc', 'rocketClaimTrustedNode']))
+const pDaoPercent = BigInt(await socketCall(
+  ['elState', 'rocketRewardsPool', 'getClaimingContractPerc', 'rocketClaimDAO']))
 
 const _100Percent = ethers.parseEther('1')
 const collateralRewards = pendingRewards * collateralPercent / _100Percent
@@ -27,11 +27,11 @@ log(2, `collateralRewards: ${collateralRewards}`)
 log(2, `oDaoRewards: ${oDaoRewards}`)
 log(2, `pDaoRewards: ${pDaoRewards}`)
 
-const nodeCount = BigInt(await cachedCall('rocketNodeManager', 'getNodeCount', [], 'targetElBlock'))
+const nodeCount = BigInt(await socketCall(['elState', 'rocketNodeManager', 'getNodeCount']))
 log(2, `nodeCount: ${nodeCount}`)
 const nodeIndices = Array.from(Array(parseInt(nodeCount)).keys())
 const nodeAddresses = await Promise.all(
-  nodeIndices.map(i => cachedCall('rocketNodeManager', 'getNodeAt', [i.toString()], 'targetElBlock'))
+  nodeIndices.map(i => socketCall(['elState', 'rocketNodeManager', 'getNodeAt', i.toString()]))
 )
 log(3, `nodeAddresses: ${nodeAddresses.slice(0, 5)}...`)
 
@@ -123,7 +123,7 @@ log(1, `totalEffectiveRplStake: ${totalEffectiveRplStake}`)
 log(1, `totalNodeWeight: ${totalNodeWeight}`)
 
 const numberOfMinipools = BigInt(
-  await cachedCall('rocketMinipoolManager', 'getMinipoolCount', [], 'targetElBlock'))
+  await socketCall(['elState', 'rocketMinipoolManager', 'getMinipoolCount']))
 
 const nodeCollateralAmounts = new Map()
 let totalCalculatedCollateralRewards = 0n
@@ -155,10 +155,10 @@ const targetSlotEpoch = await socketCall(['targetSlotEpoch'])
 const targetBcSlot = await socketCall(['targetBcSlot'])
 const targetElBlock = await socketCall(['targetElBlock'])
 
-const oDaoCount = BigInt(await cachedCall('rocketDAONodeTrusted', 'getMemberCount', [], 'targetElBlock'))
+const oDaoCount = BigInt(await socketCall(['elState', 'rocketDAONodeTrusted', 'getMemberCount']))
 const oDaoIndices = Array.from(Array(parseInt(oDaoCount)).keys())
 const oDaoAddresses = await Promise.all(
-  oDaoIndices.map(i => cachedCall('rocketDAONodeTrusted', 'getMemberAt', [i.toString()], 'targetElBlock'))
+  oDaoIndices.map(i => socketCall(['elState', 'rocketDAONodeTrusted', 'getMemberAt', i.toString()]))
 )
 log(3, `oDaoAddresses: ${oDaoAddresses.slice(0, 5)}...`)
 
@@ -170,8 +170,8 @@ while (oDaoIndicesToProcess.length) {
   await Promise.all(oDaoIndicesToProcess.splice(0, MAX_CONCURRENT_NODES)
     .map(async i => {
       const nodeAddress = oDaoAddresses[i]
-      const joinTime = BigInt(await cachedCall(
-        'rocketDAONodeTrusted', 'getMemberJoinedTime', [nodeAddress], 'finalized'))
+      const joinTime = BigInt(await socketCall(
+        ['elState', 'rocketDAONodeTrusted', 'getMemberJoinedTime', nodeAddress]))
       const odaoTime = targetElBlockTimestamp - joinTime
       const participatedSeconds = odaoTime < intervalTime ? odaoTime : intervalTime
       oDaoParticipatedSeconds.set(nodeAddress, participatedSeconds)
@@ -421,7 +421,7 @@ log(2, `totalNodeOpShare: ${totalNodeOpShare}`)
 
 for (const [minipoolAddress, minipoolScore] of minipoolScores.entries()) {
   const minipoolEth = totalNodeOpShare * minipoolScore / totalMinipoolScore
-  addNodeReward(await cachedCall(minipoolAddress, 'getNodeAddress', [], 'finalized'), 'smoothing_pool_eth', minipoolEth)
+  addNodeReward(await socketCall(['elState', minipoolAddress, 'getNodeAddress']), 'smoothing_pool_eth', minipoolEth)
   totalEthForMinipools += minipoolEth
 }
 
