@@ -532,7 +532,6 @@ log(1, `targetElBlock: ${targetElBlock}`)
 log(3, `fetching EL state...`)
 const elState = await getELState(targetElBlock)
 log(3, `fetched EL state`)
-log(3, `EL state keys: ${Object.keys(elState)}`)
 
 const targetElBlockTimestamp = await provider.getBlock(targetElBlock).then(b => BigInt(b.timestamp))
 log(2, `targetElBlockTimestamp: ${targetElBlockTimestamp}`)
@@ -628,9 +627,7 @@ const cachePort = workerData
 cachePort.on('message', async ({id, request: splits}) => {
   if (splits.length >= 3 && splits.length <= 4 && splits[0] == 'elState') {
     const [contractName, fn, args] = splits.slice(1)
-    console.log(`Trying elState ${contractName} ${fn} ${args}`)
     const data = elState[contractName][fn]
-    console.log(`For elState ${contractName} ${fn} got data with keys ${data ? Object.keys(data) : 'actually no data'}`)
     const response = contractName.startsWith('0x') ? data : data[args || '']
     cachePort.postMessage({id, response})
   }
