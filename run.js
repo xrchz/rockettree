@@ -81,10 +81,6 @@ async function getWorker(workers) {
   return workers[i].worker
 }
 
-const timestamp = () => Intl.DateTimeFormat('en-GB',
-  {hour: 'numeric', minute: 'numeric', second: 'numeric'})
-  .format(new Date())
-
 const nodeEffectiveStakes = new Map()
 const nodeWeights = new Map()
 let totalEffectiveRplStake = 0n
@@ -110,7 +106,7 @@ nodeRPLWorkers.forEach(data => data.worker.on('message', processNodeRPL))
 const nodeIndicesToProcessRPL = process.env.SKIP_RPL ? [] : nodeIndices.slice()
 while (nodeIndicesToProcessRPL.length) {
   if (nodeIndicesToProcessRPL.length % 10 == 0)
-    log(3, `${timestamp()}: ${nodeIndicesToProcessRPL.length} nodes left to process RPL`)
+    log(3, `${nodeIndicesToProcessRPL.length} nodes left to process RPL`)
   const i = nodeIndicesToProcessRPL.shift()
   const nodeAddress = nodeAddresses[i]
   const worker = await getWorker(nodeRPLWorkers)
@@ -218,7 +214,7 @@ const smoothingWorkers = makeWorkers('./smoothing.js', possiblyEligibleMinipoolI
 for (const i of nodeIndices) {
   const left = nodeIndices.length - i
   if (left % 10 == 0)
-    log(3, `${timestamp()}: ${left} nodes left to process smoothing times`)
+    log(3, `${left} nodes left to process smoothing times`)
   const nodeAddress = nodeAddresses[i]
   const worker = await getWorker(smoothingWorkers)
   worker.postMessage({i, nodeAddress})
@@ -237,7 +233,7 @@ const intervalEpochsToGetDuties = Array.from(
 
 while (intervalEpochsToGetDuties.length) {
   if (intervalEpochsToGetDuties.length % 10 == 0)
-    log(3, `${timestamp()}: ${intervalEpochsToGetDuties.length} epochs left to get duties`)
+    log(3, `${intervalEpochsToGetDuties.length} epochs left to get duties`)
   const epochIndex = intervalEpochsToGetDuties.shift().toString()
   if (await socketCall(['duties', epochIndex, 'check'])) continue
   const worker = await getWorker(dutiesWorkers)
@@ -306,7 +302,7 @@ const epochs = Array.from(
 
 while (epochs.length) {
   if (epochs.length % 10 == 0)
-    log(3, `${timestamp()}: ${epochs.length} epochs left to process attestations`)
+    log(3, `${epochs.length} epochs left to process attestations`)
   const epoch = epochs.shift()
   const prevEpoch = epoch - 1n
   await checkCache(parseInt(epoch))
@@ -367,7 +363,7 @@ const epochsToScoreAttestations = Array.from(
 
 while (epochsToScoreAttestations.length) {
   if (epochsToScoreAttestations.length % 10 == 0)
-    log(3, `${timestamp()}: ${epochsToScoreAttestations.length} epochs left to score attestations`)
+    log(3, `${epochsToScoreAttestations.length} epochs left to score attestations`)
   const epoch = epochsToScoreAttestations.shift()
   const epochStr = epoch.toString()
   if (await socketCall(['scores', epochStr, 'check'])) {
