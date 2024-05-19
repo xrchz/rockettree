@@ -2,8 +2,6 @@ import { socketCall, stakingStatus, rpip30Interval, oneEther, ln, log } from './
 import { ethers } from 'ethers'
 import { parentPort } from 'node:worker_threads'
 
-const MAX_CONCURRENT_MINIPOOLS = parseInt(process.env.MAX_CONCURRENT_MINIPOOLS) || 128
-
 const ratio = BigInt(await socketCall(['elState', 'rocketNetworkPrices', 'getRPLPrice']))
 const minCollateralFraction = BigInt(await socketCall(['elState', 'rocketDAOProtocolSettingsNode', 'getMinimumPerMinipoolStake']))
 const maxCollateralFraction = 150n * 10n ** 16n
@@ -33,26 +31,18 @@ async function getNodeMinipoolInfo(nodeAddress) {
   const nodeStake = BigInt(await socketCall(['elState', 'rocketNodeStaking', 'getNodeRPLStake', nodeAddress]))
   const registrationTime = BigInt(await socketCall(['elState', 'rocketNodeManager', 'getNodeRegistrationTime', nodeAddress]))
 
-  const minipoolInfo = await Promise.all(
-    minipoolAddresses.flatMap(minipoolAddress =>
-      Promise.all([
-        socketCall(['elState', minipoolAddress, 'getStatus']),
-        socketCall(['elState', minipoolAddress, 'getMinipoolPubkey']),
-        socketCall(['elState', minipoolAddress, 'getUserDepositBalance']),
-        socketCall(['elState', minipoolAddress, 'getNodeDepositBalance'])
-      ])
-    )
-  )
-
   let eligibleBorrowedEth = 0n
   let eligibleBondedEth = 0n
   for (const minipoolAddress of minipoolAddresses) {
-    const [minipoolStatus, pubkey, borrowedEth, bondedEth] = minipoolInfo.splice(0, 4)
+    const minipoolStatus = await socketCall(['elState', minipoolAddress, 'getStatus'])
     if (minipoolStatus != stakingStatus) continue
     // console.time(`getValidatorStatus ${pubkey}`)
+    const pubkey = await socketCall(['elState', 'rocketMinipoolManager', 'getMinipoolPubkey', minipoolAddress])
     const validatorStatus = await socketCall(['beacon', 'getValidatorStatus', pubkey])
     // console.timeEnd(`getValidatorStatus ${pubkey}`)
     if (getEligibility(validatorStatus.activation_epoch, validatorStatus.exit_epoch)) {
+      const borrowedEth = BigInt(await socketCall(['elState', minipoolAddress, 'getUserDepositBalance']))
+      const bondedEth = BigInt(await socketCall(['elState', minipoolAddress, 'getNodeDepositBalance']))
       eligibleBorrowedEth += borrowedEth
       eligibleBondedEth += bondedEth
     }
