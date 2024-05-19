@@ -4,6 +4,7 @@ import { workerData, parentPort } from 'node:worker_threads'
 import { ethers } from 'ethers'
 import { log, tryBigInt, makeLock, provider, startBlock, genesisTime,
          secondsPerSlot, slotsPerEpoch, networkName } from './lib.js'
+import { MulticallProvider } from "@ethers-ext/provider-multicall"
 
 const dbDir = process.env.DB_DIR || 'db'
 const db = open({path: dbDir})
@@ -235,8 +236,7 @@ const minipoolABI = [
 ]
 
 const multicaller = new MulticallProvider(provider)
-
-const MAX_CALLS = 10
+const MAX_CALLS = 128
 
 const getELState = async (blockTag) => {
   const rocketStorage = new ethers.Contract(
@@ -261,11 +261,20 @@ const getELState = async (blockTag) => {
                                    'function getLastBondReductionTime(address) view returns (uint256)']]
   ]
   const contracts = new Map()
-  await Promise.all(contractInfo.map(([name, abi]) =>
+  const promises = []
+  const drainPromises = () => Promise.all(promises.splice(0, promises.length))
+  const enqueuePromises = async (...ps) => {
+    if (promises.length + ps.length > MAX_CALLS)
+      await drainPromises()
+    promises.push(...ps)
+  }
+  await enqueuePromises(...contractInfo.map(([name, abi]) =>
     getRocketAddress(name).then(address =>
       contracts.set(name, new ethers.Contract(address, abi, multicaller))
     )
   ))
+  log(3, 'Getting contract addresses')
+  await drainPromises()
   const rocketDAONodeTrusted = contracts.get('rocketDAONodeTrusted')
   const rocketNodeManager = contracts.get('rocketNodeManager')
   const rocketMinipoolManager = contracts.get('rocketMinipoolManager')
@@ -320,13 +329,6 @@ const getELState = async (blockTag) => {
       'getNodeRPLStake': {},
     }
   }
-  const promises = []
-  const drainPromises = () => Promise.all(promises.splice(0, promises.length))
-  const enqueuePromises = async (...p) => {
-    if (promises.length + p.length > MAX_CALLS)
-      await drainPromises()
-    promises.push(...p)
-  }
   for (const [name, data] of Object.entries(state)) {
     const c = contracts.get(name)
     for (const [fn, calls] of Object.entries(data))
@@ -337,6 +339,7 @@ const getELState = async (blockTag) => {
           )
         )
   }
+  log(3, 'Getting indepedent calls')
   await drainPromises()
   const nodeCount = state['rocketNodeManager']['getNodeCount']['']
   for (let i = 0; i < nodeCount; i++)
@@ -352,6 +355,7 @@ const getELState = async (blockTag) => {
         state['rocketDAONodeTrusted']['getMemberAt'][i] = r
       )
     )
+  log(3, 'Getting node addresses')
   await drainPromises()
   const nodeAddresses = []
   for (let i = 0; i < nodeCount; i++)
@@ -360,13 +364,13 @@ const getELState = async (blockTag) => {
   for (let i = 0; i < memberCount; i++)
     members.push(state['rocketDAONodeTrusted']['getMemberAt'][i])
   for (const member of members)
-    enqueuePromises(
+    await enqueuePromises(
       rocketDAONodeTrusted['getMemberJoinedTime'](member, {blockTag}).then(r =>
         state['rocketDAONodeTrusted']['getMemberJoinedTime'][member] = r
       )
     )
   for (const nodeAddress of nodeAddresses)
-    enqueuePromises(
+    await enqueuePromises(
       rocketMinipoolManager.getNodeMinipoolCount(nodeAddress, {blockTag}).then(r =>
         state['rocketMinipoolManager']['getNodeMinipoolCount'][nodeAddress] = r
       ),
@@ -383,6 +387,7 @@ const getELState = async (blockTag) => {
         state['rocketNodeManager']['getSmoothingPoolRegistrationChanged'][nodeAddress] = r
       )
     )
+  log(3, 'Getting node data')
   await drainPromises()
   for (const nodeAddress of nodeAddresses) {
     const nodeMinipoolCount = state['rocketMinipoolManager']['getNodeMinipoolCount'][nodeAddress]
@@ -393,6 +398,7 @@ const getELState = async (blockTag) => {
         )
       )
   }
+  log(3, 'Getting minipool addresses')
   await drainPromises()
   const minipools = []
   for (const nodeAddress of nodeAddresses) {
@@ -427,6 +433,7 @@ const getELState = async (blockTag) => {
       )
     )
   }
+  log(3, 'Getting minipool data')
   await drainPromises()
   return state
 }

@@ -7,6 +7,7 @@
   "dependencies": {
     "dotenv": "16",
     "ethers": "6",
+    "@ethers-ext/provider-multicall": "6.0.0-beta.1",
     "lmdb": "2",
     "ipfs-unixfs-importer": "15",
     "blockstore-core": "4"
