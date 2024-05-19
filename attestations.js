@@ -50,7 +50,7 @@ async function processEpoch(epochToCheck) {
       const slotIndex = parseInt(slotNumber)
       if (slotToCheck <= slotIndex) continue
       const epoch = parseInt(BigInt(slotIndex) / slotsPerEpoch)
-      if (epoch < denebEpoch)
+      if (epoch < denebEpoch || currentIndex <= 23) // TODO: update with correct final index for non-Deneb
         if (slotToCheck - slotIndex > parseInt(slotsPerEpoch)) continue
       else
         if (BigInt(slotToCheck) / slotsPerEpoch > epoch + 1) continue
