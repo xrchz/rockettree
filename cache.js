@@ -485,7 +485,8 @@ const rocketRewardsPool = new ethers.Contract(
   provider)
 contracts.set('rocketRewardsPool', rocketRewardsPool)
 
-const startTime = await cachedCall(rocketRewardsPool, 'getClaimIntervalTimeStart', [], startBlock)
+log(2, `startBlock: ${startBlock}`)
+const startTime = await rocketRewardsPool.getClaimIntervalTimeStart()
 log(1, `startTime: ${startTime}`)
 
 const intervalTime = await cachedCall(rocketRewardsPool, 'getClaimIntervalTime', [], startBlock)
