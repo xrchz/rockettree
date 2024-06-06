@@ -636,7 +636,8 @@ cachePort.on('message', async ({id, request: splits}) => {
   if (splits.length >= 3 && splits.length <= 4 && splits[0] == 'elState') {
     const [contractName, fn, args] = splits.slice(1)
     const data = elState[contractName][fn]
-    const response = contractName.startsWith('0x') ? data : data[args || '']
+    const value = contractName.startsWith('0x') ? data : data[args || '']
+    const response = typeof value === 'bigint' ? value.toString() : value
     cachePort.postMessage({id, response})
   }
   else if (splits.length == 3 && splits[0] == 'multicall') {
