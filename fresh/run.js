@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import { ethers } from 'ethers'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { MulticallProvider } from "@ethers-ext/provider-multicall"
 
 function tryBigInt(s) { try { return BigInt(s) } catch { return false } }
@@ -19,6 +19,8 @@ const slotsPerEpoch = 32n
 const rpip30Interval = 18
 const denebEpoch = 269568
 const stakingStatus = 2
+const farPastTime = 0n
+const farFutureTime = BigInt(1e18)
 
 const thirteen6137Ether = ethers.parseEther('13.6137')
 const oneEther = ethers.parseEther('1')
@@ -44,6 +46,9 @@ function log2(x) {
 }
 const ln = (x) => (log2(x) * oneEther) / 1442695040888963407n
 
+const stringifier = (_, v) => typeof v == 'bigint' ? `0x${v.toString(16)}` : v
+
+const perfUrl = process.env.PERF_URL
 const beaconRpcUrl = process.env.BN_URL || 'http://localhost:5052'
 const provider = new ethers.JsonRpcProvider(process.env.RPC_URL || 'http://localhost:8545')
 const networkName = await provider.getNetwork().then(n => n.name)
@@ -285,9 +290,7 @@ const getELState = async (blockTag) => {
   log(3, 'Getting minipool data')
   await drainPromises()
   writeFileSync(cacheFilename,
-    JSON.stringify(state,
-      (_, v) => typeof v == 'bigint' ? `0x${v.toString(16)}` : v
-    )
+    JSON.stringify(state, stringifier)
   )
   return state
 }
@@ -377,12 +380,29 @@ log(3, `fetched EL state`)
 const currentIndex = BigInt(elState['rocketRewardsPool']['getRewardIndex'][''])
 log(2, `currentIndex: ${currentIndex}`)
 
+const previousIntervalEventFilter = rocketRewardsPool.filters.RewardSnapshot(currentIndex - 1n)
+const intervalBlocksApprox = intervalTime / 12n
+const submissionDelayBlocksApprox = 400n
+const foundEvents = await rocketRewardsPool.queryFilter(previousIntervalEventFilter,
+  targetElBlock - intervalBlocksApprox,
+  targetElBlock + submissionDelayBlocksApprox)
+if (foundEvents.length !== 1)
+  throw new Error(`Did not find exactly 1 RewardSnapshot event for Interval ${currentIndex - 1n}, got ${foundEvents.length}`)
+const previousIntervalEvent = foundEvents.pop()
+const RewardSubmission = previousIntervalEvent.args[1]
+const ConsensusBlock = RewardSubmission[2]
+const bnStartEpoch = ConsensusBlock / slotsPerEpoch + 1n
+log(2, `bnStartEpoch: ${bnStartEpoch}`)
+let bnStartBlock = slotsPerEpoch * bnStartEpoch
+while (!(await checkSlotExists(bnStartBlock))) bnStartBlock++
+log(1, `bnStartBlock: ${bnStartBlock}`)
+
 const pendingRewards = BigInt(elState['rocketRewardsPool']['getPendingRPLRewards'][''])
 const collateralPercent = BigInt(elState['rocketRewardsPool']['getClaimingContractPerc']['rocketClaimNode'])
 const oDaoPercent = BigInt(elState['rocketRewardsPool']['getClaimingContractPerc']['rocketClaimTrustedNode'])
 const pDaoPercent = BigInt(elState['rocketRewardsPool']['getClaimingContractPerc']['rocketClaimDAO'])
 
-const _100Percent = ethers.parseEther('1')
+const _100Percent = oneEther
 const collateralRewards = pendingRewards * collateralPercent / _100Percent
 const oDaoRewards = pendingRewards * oDaoPercent / _100Percent
 const pDaoRewards = pendingRewards * pDaoPercent / _100Percent
@@ -404,6 +424,7 @@ let totalNodeWeight = 0n
 const rpip30C = BigInt(Math.min(6, parseInt(currentIndex) - rpip30Interval + 1))
 
 const allPubkeys = Array.from(new Set(Object.values(elState['rocketMinipoolManager']['getMinipoolPubkey'])))
+log(3, `allPubkeys count: ${allPubkeys.length}`)
 log(3, `allPubkeys: ${allPubkeys.slice(0, 5)}...`)
 log(3, `fetching validator statuses...`)
 const validatorStatuses = {}
@@ -421,13 +442,11 @@ const validatorStatuses = {}
       body: JSON.stringify({ids: allPubkeys})
     }
     const response = await fetch(url, options)
-    if (response.status !== 200) {
-      console.error(`Unexpected response getting validator statuses: ${response.status}: ${await response.text()}`)
-      process.exit(1)
-    }
+    if (response.status !== 200)
+      throw new Error(`Unexpected response getting validator statuses: ${response.status}: ${await response.text()}`)
     const items = await response.json().then(j => j.data)
-    for (const {validator: {pubkey, activation_epoch, exit_epoch}} of items)
-      validatorStatuses[pubkey] = {activation_epoch, exit_epoch}
+    for (const {validator: {pubkey, activation_epoch, exit_epoch}, status} of items)
+      validatorStatuses[pubkey] = {activation_epoch, exit_epoch, status}
     writeFileSync(cacheFilename, JSON.stringify(validatorStatuses))
   }
 }
@@ -455,6 +474,10 @@ const ratio = BigInt(elState['rocketNetworkPrices']['getRPLPrice'][''])
 const minCollateralFraction = BigInt(elState['rocketDAOProtocolSettingsNode']['getMinimumPerMinipoolStake'][''])
 const maxCollateralFraction = 150n * 10n ** 16n
 
+const nodeSmoothingTimes = new Map()
+const eligiblePubkeysByNode = new Map()
+const minipoolsByPubkey = new Map()
+
 for (const nodeAddress of nodeAddresses) {
   const minipoolCount = BigInt(elState['rocketMinipoolManager']['getNodeMinipoolCount'][nodeAddress])
   const minipoolIndicesToProcess = Array.from(Array(parseInt(minipoolCount)).keys())
@@ -467,11 +490,35 @@ for (const nodeAddress of nodeAddresses) {
     const minipoolStatus = BigInt(elState[minipoolAddress]['getStatus'])
     if (minipoolStatus != stakingStatus) continue
     const pubkey = elState['rocketMinipoolManager']['getMinipoolPubkey'][minipoolAddress]
-    const {activation_epoch, exit_epoch} = validatorStatuses[pubkey]
+    if (!(pubkey in validatorStatuses)) continue
+    const {activation_epoch, exit_epoch, status} = validatorStatuses[pubkey]
     if (getEligibility(activation_epoch, exit_epoch)) {
       eligibleBorrowedEth += BigInt(elState[minipoolAddress]['getUserDepositBalance'])
       eligibleBondedEth += BigInt(elState[minipoolAddress]['getNodeDepositBalance'])
     }
+    const penaltyCount = BigInt(elState['rocketNetworkPenalties']['getPenaltyCount'][minipoolAddress])
+    if (penaltyCount >= 3) {
+      nodeSmoothingTimes.delete(nodeAddress)
+      eligiblePubkeysByNode.delete(nodeAddress)
+      log(3, `${nodeAddress} is a cheater`)
+      continue
+    }
+    if (!nodeSmoothingTimes.has(nodeAddress))
+      nodeSmoothingTimes.set(nodeAddress, {})
+    if (!eligiblePubkeysByNode.has(nodeAddress))
+      eligiblePubkeysByNode.set(nodeAddress, new Set())
+    const notEligible = (
+      ['pending_initialized', 'pending_queued'].includes(status) ||
+      (activation_epoch == 'FAR_FUTURE_EPOCH' ||
+       BigInt(activation_epoch) * slotsPerEpoch > targetBcSlot) ||
+      (exit_epoch != 'FAR_FUTURE_EPOCH' &&
+       BigInt(exit_epoch) * (slotsPerEpoch + 1n) < bnStartBlock)
+    )
+    if (!notEligible) {
+      eligiblePubkeysByNode.get(nodeAddress).add(pubkey)
+      minipoolsByPubkey.set(pubkey, minipoolAddress)
+    }
+
   }
   const minCollateral = eligibleBorrowedEth * minCollateralFraction / ratio
   const maxCollateral = eligibleBondedEth * maxCollateralFraction / ratio
@@ -555,3 +602,288 @@ if (oDaoRewards - totalCalculatedODaoRewards > numberOfMinipools)
 const actualPDaoRewards = pendingRewards - totalCalculatedCollateralRewards - totalCalculatedODaoRewards
 log(1, `actualPDaoRewards: ${actualPDaoRewards}`)
 log(3, `pDAO rewards delta: ${actualPDaoRewards - pDaoRewards}`)
+
+const rocketSmoothingPool = await getRocketAddress('rocketSmoothingPool', targetElBlock)
+const smoothingPoolBalance = await provider.getBalance(rocketSmoothingPool, targetElBlock)
+log(2, `smoothingPoolBalance: ${smoothingPoolBalance}`)
+
+for (const [nodeAddress, smoothingTimes] of nodeSmoothingTimes.entries()) {
+  const isOptedIn = elState['rocketNodeManager']['getSmoothingPoolRegistrationState'][nodeAddress]
+  const statusChangeTime = BigInt(elState['rocketNodeManager']['getSmoothingPoolRegistrationChanged'][nodeAddress])
+  smoothingTimes.optInTime = isOptedIn ? statusChangeTime : farPastTime
+  smoothingTimes.optOutTime = isOptedIn ? farFutureTime : statusChangeTime
+}
+
+const eligiblePubkeysSet = new Set()
+for (const s of eligiblePubkeysByNode.values())
+  for (const pubkey of s.values())
+    eligiblePubkeysSet.add(pubkey)
+const eligiblePubkeys = Array.from(eligiblePubkeysSet)
+log(3, `eligiblePubkeys count: ${eligiblePubkeys.length}`)
+log(3, `eligiblePubkeys: ${eligiblePubkeys.slice(0, 5)}...`)
+
+const EPOCHS_PER_QUERY = 32
+
+log(3, `fetching attestations...`)
+{
+  let first_epoch = parseInt(bnStartEpoch)
+  const options = {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'}
+  }
+  while (first_epoch < targetSlotEpoch) {
+    const last_epoch = Math.min(first_epoch + EPOCHS_PER_QUERY, parseInt(targetSlotEpoch))
+    log(3, `...${first_epoch}-${last_epoch}...`)
+    const cacheFilename = `cache/a-${first_epoch}-${last_epoch}.json`
+    if (!existsSync(cacheFilename)) {
+      const attestations = {}
+      options.body = JSON.stringify({ first_epoch, last_epoch, pubkeys: eligiblePubkeys })
+      const response = await fetch(perfUrl, options)
+      if (response.status !== 200)
+        throw new Error(`Unexpected response getting attestations ${first_epoch}-${last_epoch}: ${response.status}: ${await response.text()}`)
+      for (const [pubkey, epochs] of Object.entries(await response.json())) {
+        if (!(pubkey in attestations)) attestations[pubkey] = {}
+        Object.assign(attestations[pubkey], epochs)
+      }
+      writeFileSync(cacheFilename, JSON.stringify(attestations))
+    }
+    first_epoch = last_epoch + 1
+  }
+}
+log(3, `fetched attestations`)
+
+let totalMinipoolScore = 0n
+let successfulAttestations = 0n
+const minipoolScores = {}
+
+log(3, `scoring attestations...`)
+{
+  let first_epoch = parseInt(bnStartEpoch)
+  while (first_epoch < targetSlotEpoch) {
+    const last_epoch = Math.min(first_epoch + EPOCHS_PER_QUERY, parseInt(targetSlotEpoch))
+    log(3, `...${first_epoch}-${last_epoch}...`)
+    const cacheFilename = `cache/s-${first_epoch}-${last_epoch}.json`
+    let totalMinipoolScoreForRange = 0n
+    let successfulAttestationsForRange = 0n
+    const minipoolScoresForRange = {}
+    if (existsSync(cacheFilename)) {
+      const {total, attestations, scores} = JSON.parse(readFileSync(cacheFilename))
+      totalMinipoolScoreForRange = BigInt(total)
+      successfulAttestationsForRange = BigInt(attestations)
+      for (const [minipoolAddress, score] of Object.entries(scores))
+        minipoolScoresForRange[minipoolAddress] = BigInt(score)
+    }
+    else {
+      const attestationCacheFilename = `cache/a-${first_epoch}-${last_epoch}.json`
+      const attestations = JSON.parse(readFileSync(attestationCacheFilename))
+      for (const [pubkey, epochs] of Object.entries(attestations)) {
+        const minipoolAddress = minipoolsByPubkey.get(pubkey)
+        const nodeAddress = elState[minipoolAddress]['getNodeAddress']
+        const {optInTime, optOutTime} = nodeSmoothingTimes.get(nodeAddress)
+        for (const [epoch, {slot, attested_slot}] of Object.entries(epochs)) {
+          const slotIndex = BigInt(slot)
+          const blockTime = genesisTime + secondsPerSlot * slotIndex
+          if (blockTime < optInTime || blockTime > optOutTime) continue
+          const statusTime = BigInt(elState[minipoolAddress]['getStatusTime'])
+          if (blockTime < statusTime) continue
+          if (!attested_slot || attested_slot > slotIndex + slotsPerEpoch) continue
+          const rocketMinipoolBondReducer = elState['rocketMinipoolBondReducer']
+          const currentBond = BigInt(elState[minipoolAddress]['getNodeDepositBalance'])
+          const currentFee = BigInt(elState[minipoolAddress]['getNodeFee'])
+          const previousBond = BigInt(rocketMinipoolBondReducer['getLastBondReductionPrevValue'][minipoolAddress])
+          const previousFee = BigInt(rocketMinipoolBondReducer['getLastBondReductionPrevNodeFee'][minipoolAddress])
+          const lastReduceTime = BigInt(rocketMinipoolBondReducer['getLastBondReductionTime'][minipoolAddress])
+          const {bond, fee} = lastReduceTime > 0 && lastReduceTime > blockTime ?
+            {bond: previousBond, fee: previousFee} :
+            {bond: currentBond, fee: currentFee}
+          const minipoolScore = (BigInt(1e18) - fee) * bond / BigInt(32e18) + fee
+          if (!(minipoolAddress in minipoolScoresForRange))
+            minipoolScoresForRange[minipoolAddress] = minipoolScore
+          else
+            minipoolScoresForRange[minipoolAddress] += minipoolScore
+          totalMinipoolScoreForRange += minipoolScore
+          successfulAttestationsForRange += 1n
+        }
+      }
+      const data = {
+        total: totalMinipoolScoreForRange,
+        attestations: successfulAttestationsForRange,
+        scores: minipoolScoresForRange
+      }
+      writeFileSync(cacheFilename, JSON.stringify(data, stringifier))
+    }
+    totalMinipoolScore += totalMinipoolScoreForRange
+    successfulAttestations += successfulAttestationsForRange
+    for (const [minipoolAddress, minipoolScore] of Object.entries(minipoolScoresForRange)) {
+      if (!(minipoolAddress in minipoolScores))
+        minipoolScores[minipoolAddress] = minipoolScore
+      else
+        minipoolScores[minipoolAddress] += minipoolScore
+    }
+    first_epoch = last_epoch + 1
+  }
+}
+log(3, `scored attestations`)
+log(2, `successfulAttestations: ${successfulAttestations}`)
+log(2, `totalMinipoolScore: ${totalMinipoolScore}`)
+
+const nodeRewards = new Map()
+function addNodeReward(nodeAddress, token, amount) {
+  if (!amount) return
+  if (!nodeRewards.has(nodeAddress)) nodeRewards.set(nodeAddress,
+    {smoothing_pool_eth: 0n, collateral_rpl: 0n, oracle_dao_rpl: 0n}
+  )
+  nodeRewards.get(nodeAddress)[token] += amount
+}
+nodeCollateralAmounts.forEach((v, k) => addNodeReward(k, 'collateral_rpl', v))
+oDaoAmounts.forEach((v, k) => addNodeReward(k, 'oracle_dao_rpl', v))
+
+const totalNodeOpShare = smoothingPoolBalance * totalMinipoolScore / (successfulAttestations * _100Percent)
+let totalEthForMinipools = 0n
+
+log(2, `totalNodeOpShare: ${totalNodeOpShare}`)
+
+for (const [minipoolAddress, minipoolScore] of Object.entries(minipoolScores)) {
+  const minipoolEth = totalNodeOpShare * minipoolScore / totalMinipoolScore
+  addNodeReward(elState[minipoolAddress]['getNodeAddress'], 'smoothing_pool_eth', minipoolEth)
+  totalEthForMinipools += minipoolEth
+}
+
+log(2, `totalEthForMinipools: ${totalEthForMinipools}`)
+
+function nodeMetadataHash(nodeAddress, totalRPL, totalETH) {
+  const data = new Uint8Array(20 + 32 + 32 + 32)
+  data.set(ethers.getBytes(nodeAddress), 0)
+  data.fill(0, 20, 20 + 32)
+  const RPLuint8s = ethers.toBeArray(totalRPL)
+  const ETHuint8s = ethers.toBeArray(totalETH)
+  data.set(RPLuint8s, 20 + 32 + (32 - RPLuint8s.length))
+  data.set(ETHuint8s, 20 + 32 + 32 + (32 - ETHuint8s.length))
+  return ethers.keccak256(data)
+}
+
+const nodeRewardsObject = {}
+const nodeHashes = new Map()
+nodeRewards.forEach(({smoothing_pool_eth, collateral_rpl, oracle_dao_rpl}, nodeAddress) => {
+  if (0 < smoothing_pool_eth || 0 < collateral_rpl || 0 < oracle_dao_rpl) {
+    nodeHashes.set(nodeAddress, nodeMetadataHash(nodeAddress, collateral_rpl + oracle_dao_rpl, smoothing_pool_eth))
+    nodeRewardsObject[nodeAddress] = {ETH: smoothing_pool_eth.toString(),
+                                      RPL: (collateral_rpl + oracle_dao_rpl).toString()}
+  }
+})
+writeFileSync('node-rewards.json', JSON.stringify(nodeRewardsObject))
+
+const nullHash = ethers.hexlify(new Uint8Array(32))
+const leafValues = Array.from(nodeHashes.values()).sort()
+const rowHashes = leafValues.concat(
+  Array(Math.pow(2, Math.ceil(Math.log2(leafValues.length)))
+        - leafValues.length).fill(nullHash))
+log(3, `number of leaves: ${leafValues.length} (${rowHashes.length} with nulls)`)
+while (rowHashes.length > 1) {
+  let i = 0
+  while (i < rowHashes.length) {
+    const [left, right] = rowHashes.slice(i, i + 2).sort()
+    const branch = new Uint8Array(64)
+    branch.set(ethers.getBytes(left), 0)
+    branch.set(ethers.getBytes(right), 32)
+    rowHashes.splice(i++, 2, ethers.keccak256(branch))
+  }
+}
+log(1, `merkle root: ${rowHashes}`)
+rowHashes.push(`interval: ${currentIndex}`)
+rowHashes.push(`start epoch: ${bnStartEpoch}`)
+rowHashes.push(`target epoch: ${targetSlotEpoch}`)
+writeFileSync('merkle-root.txt', rowHashes.join('\n'))
+
+let consensus_start_block = parseInt(bnStartEpoch * slotsPerEpoch)
+while (!(await checkSlotExists(consensus_start_block)))
+  consensus_start_block++
+
+const sszFileName = `rp-rewards-mainnet-${currentIndex}.ssz`
+log(2, `Generating ssz file ${sszFileName}...`)
+
+const sszFile = {
+  magic: new Uint8Array([0x52, 0x50, 0x52, 0x54]),
+  rewards_file_version: 3,
+  ruleset_version: 9,
+  network: 1,
+  index: currentIndex,
+  start_time: genesisTime + bnStartEpoch * slotsPerEpoch * secondsPerSlot,
+  end_time: genesisTime + ((targetSlotEpoch + 1n) * slotsPerEpoch - 1n) * secondsPerSlot,
+  consensus_start_block,
+  consensus_end_block: targetBcSlot,
+  execution_start_block: await getBlockNumberFromSlot(consensus_start_block),
+  execution_end_block: targetElBlock,
+  intervals_passed: tryBigInt(process.env.OVERRIDE_TARGET_EPOCH) ? 0 : 1,
+  merkle_root: Buffer.from(rowHashes[0].slice(2), 'hex'),
+  total_rewards: {
+    protocol_dao_rpl: actualPDaoRewards,
+    total_collateral_rpl: totalCalculatedCollateralRewards,
+    total_oracle_dao_rpl: totalCalculatedODaoRewards,
+    total_smoothing_pool_eth: smoothingPoolBalance,
+    pool_staker_smoothing_pool_eth: smoothingPoolBalance - totalEthForMinipools,
+    node_operator_smoothing_pool_eth: totalEthForMinipools,
+    total_node_weight: totalNodeWeight
+  },
+  network_rewards: [{
+    network: 0,
+    collateral_rpl: totalCalculatedCollateralRewards,
+    oracle_dao_rpl: totalCalculatedODaoRewards,
+    smoothing_pool_eth: totalEthForMinipools
+  }],
+  node_rewards:
+    Array.from(nodeRewards.entries())
+    .map(([k, v]) => [Buffer.from(k.slice(2), 'hex'), v])
+    .sort(([k1], [k2]) => Buffer.compare(k1, k2))
+    .map(([address, {collateral_rpl, oracle_dao_rpl, smoothing_pool_eth}]) =>
+      ({address, network: 0, collateral_rpl, oracle_dao_rpl, smoothing_pool_eth})
+    )
+}
+
+const serializeUint = (n, nbits) => Buffer.from(n.toString(16).padStart(2 * nbits / 8, '0'), 'hex').reverse()
+
+const serializationPieces = [
+  sszFile.magic,
+  serializeUint(sszFile.rewards_file_version,  64),
+  serializeUint(sszFile.ruleset_version,       64),
+  serializeUint(sszFile.network,               64),
+  serializeUint(sszFile.index,                 64),
+  serializeUint(sszFile.start_time,            64),
+  serializeUint(sszFile.end_time,              64),
+  serializeUint(sszFile.consensus_start_block, 64),
+  serializeUint(sszFile.consensus_end_block,   64),
+  serializeUint(sszFile.execution_start_block, 64),
+  serializeUint(sszFile.execution_end_block,   64),
+  serializeUint(sszFile.intervals_passed,      64),
+  sszFile.merkle_root,
+  serializeUint(sszFile.total_rewards.protocol_dao_rpl,                 256),
+  serializeUint(sszFile.total_rewards.total_collateral_rpl,             256),
+  serializeUint(sszFile.total_rewards.total_oracle_dao_rpl,             256),
+  serializeUint(sszFile.total_rewards.total_smoothing_pool_eth,         256),
+  serializeUint(sszFile.total_rewards.pool_staker_smoothing_pool_eth,   256),
+  serializeUint(sszFile.total_rewards.node_operator_smoothing_pool_eth, 256),
+  serializeUint(sszFile.total_rewards.total_node_weight,                256),
+]
+const fixedLength = serializationPieces.reduce((n, a) => n + a.length, 0) + 4 + 4
+serializationPieces.push(serializeUint(fixedLength, 32))
+const networkRewardLength = (64 + 3 * 256) / 8
+serializationPieces.push(serializeUint(fixedLength + networkRewardLength, 32))
+serializationPieces.push(
+  serializeUint(sszFile.network_rewards[0].network, 64),
+  serializeUint(sszFile.network_rewards[0].collateral_rpl,     256),
+  serializeUint(sszFile.network_rewards[0].oracle_dao_rpl,     256),
+  serializeUint(sszFile.network_rewards[0].smoothing_pool_eth, 256)
+)
+for (const {address, network, collateral_rpl, oracle_dao_rpl, smoothing_pool_eth} of sszFile.node_rewards) {
+  serializationPieces.push(
+    address,
+    serializeUint(network, 64),
+    serializeUint(collateral_rpl,     256),
+    serializeUint(oracle_dao_rpl,     256),
+    serializeUint(smoothing_pool_eth, 256)
+  )
+}
+
+const ssz = Buffer.concat(serializationPieces)
+writeFileSync(sszFileName, ssz)
+log(2, `ssz file of ${ssz.length} bytes written`)

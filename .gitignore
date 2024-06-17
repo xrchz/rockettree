@@ -1,4 +1,5 @@
 *.json
+*.ssz
 !package.json
 !package-lock.json
 *.txt
