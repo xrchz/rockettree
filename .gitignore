@@ -1,4 +1,6 @@
 *.json
+!package.json
+!package-lock.json
 *.txt
 *.log
 node_modules

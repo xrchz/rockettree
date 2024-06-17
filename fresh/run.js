@@ -1,11 +1,7 @@
 import 'dotenv/config'
 import { ethers } from 'ethers'
-import { open } from 'lmdb'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { MulticallProvider } from "@ethers-ext/provider-multicall"
-
-const dbDir = process.env.DB_DIR || 'db'
-const db = open({path: dbDir})
 
 function tryBigInt(s) { try { return BigInt(s) } catch { return false } }
 
@@ -343,46 +339,13 @@ log(1, `targetSlotEpoch: ${targetSlotEpoch}`)
 targetBcSlot = (targetSlotEpoch + 1n) * slotsPerEpoch - 1n
 log(2, `last (possibly missing) slot in epoch: ${targetBcSlot}`)
 
-const bigIntPrefix = 'B:'
-const numberPrefix = 'N:'
-function serialise(result) {
-  const type = typeof result
-  if (type === 'bigint')
-    return bigIntPrefix.concat(result.toString(16))
-  else if (type === 'number')
-    return numberPrefix.concat(result.toString(16))
-  else if (type === 'string' || type === 'object' || type === 'boolean')
-    return result
-  else {
-    throw new Error(`serialise unhandled type: ${type}`)
-  }
-}
-function deserialise(data) {
-  if (typeof data !== 'string')
-    return data
-  else if (data.startsWith(bigIntPrefix))
-    return BigInt(`0x${data.substring(bigIntPrefix.length)}`)
-  else if (data.startsWith(numberPrefix))
-    return parseInt(`0x${data.substring(numberPrefix.length)}`)
-  else
-    return data
-}
-
-async function cachedBeacon(path, result) {
-  const key = `/${networkName}${path}`
-  if (result === undefined) return deserialise(db.get(key))
-  else await db.put(key, serialise(result))
-}
-
 async function checkSlotExists(slotNumber) {
   const path = `/eth/v1/beacon/headers/${slotNumber}`
-  const cache = await cachedBeacon(path); if (cache !== undefined) return cache
   const url = new URL(path, beaconRpcUrl)
   const response = await fetch(url)
   if (response.status !== 200 && response.status !== 404)
     console.warn(`Unexpected response status getting ${slotNumber} header: ${response.status}`)
-  const result = response.status === 200
-  await cachedBeacon(path, result); return result
+  return response.status === 200
 }
 while (!(await checkSlotExists(targetBcSlot))) targetBcSlot--
 
@@ -391,7 +354,6 @@ log(1, `targetBcSlot: ${targetBcSlot}`)
 async function getBlockNumberFromSlot(slotNumber) {
   const path = `/eth/v1/beacon/blinded_blocks/${slotNumber}`
   const key = `${path}/blockNumber`
-  const cache = await cachedBeacon(key); if (cache !== undefined) return cache
   const url = new URL(path, beaconRpcUrl)
   const response = await fetch(url)
   if (response.status !== 200) {
@@ -399,8 +361,7 @@ async function getBlockNumberFromSlot(slotNumber) {
     console.warn(`response text: ${await response.text()}`)
   }
   const json = await response.json()
-  const result = BigInt(json.data.message.body.execution_payload_header.block_number)
-  await cachedBeacon(key, result); return result
+  return BigInt(json.data.message.body.execution_payload_header.block_number)
 }
 
 const targetElBlock = await getBlockNumberFromSlot(targetBcSlot)

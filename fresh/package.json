@@ -1,0 +1,14 @@
+{
+  "name": "rockettree",
+  "version": "0.2.0",
+  "license": "GPL-3.0-or-later",
+  "description": "Calculate the Rocket Pool Rewards Merkle Tree",
+  "type": "module",
+  "dependencies": {
+    "dotenv": "16",
+    "ethers": "6",
+    "@ethers-ext/provider-multicall": "6.0.0-beta.2",
+    "ipfs-unixfs-importer": "15",
+    "blockstore-core": "4"
+  }
+}
