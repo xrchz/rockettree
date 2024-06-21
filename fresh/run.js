@@ -654,7 +654,7 @@ log(3, `fetched attestations`)
 
 let totalMinipoolScore = 0n
 let successfulAttestations = 0n
-const minipoolScores = {}
+const minipoolPerformance = {}
 
 log(3, `scoring attestations...`)
 {
@@ -662,16 +662,19 @@ log(3, `scoring attestations...`)
   while (first_epoch < targetSlotEpoch) {
     const last_epoch = Math.min(first_epoch + EPOCHS_PER_QUERY, parseInt(targetSlotEpoch))
     log(3, `...${first_epoch}-${last_epoch}...`)
-    const cacheFilename = `cache/s-${first_epoch}-${last_epoch}.json`
+    const cacheFilename = `cache/p-${first_epoch}-${last_epoch}.json`
     let totalMinipoolScoreForRange = 0n
     let successfulAttestationsForRange = 0n
-    const minipoolScoresForRange = {}
+    const minipoolPerformanceForRange = {}
     if (existsSync(cacheFilename)) {
-      const {total, attestations, scores} = JSON.parse(readFileSync(cacheFilename))
+      const {total, attestations, performance} = JSON.parse(readFileSync(cacheFilename))
       totalMinipoolScoreForRange = BigInt(total)
       successfulAttestationsForRange = BigInt(attestations)
-      for (const [minipoolAddress, score] of Object.entries(scores))
-        minipoolScoresForRange[minipoolAddress] = BigInt(score)
+      for (const [minipoolAddress, {score, successes, missing}] of Object.entries(performance)) {
+        minipoolPerformanceForRange[minipoolAddress] = {
+          score: BigInt(score), successes, missing
+        }
+      }
     }
     else {
       const attestationCacheFilename = `cache/a-${first_epoch}-${last_epoch}.json`
@@ -686,7 +689,14 @@ log(3, `scoring attestations...`)
           if (blockTime < optInTime || blockTime > optOutTime) continue
           const statusTime = BigInt(elState[minipoolAddress]['getStatusTime'])
           if (blockTime < statusTime) continue
-          if (!attested_slot || attested_slot > slotIndex + slotsPerEpoch) continue
+          if (!(minipoolAddress in minipoolPerformanceForRange))
+            minipoolPerformanceForRange[minipoolAddress] = {
+              score: 0n, successes: 0, missing: []
+            }
+          if (!attested_slot || attested_slot > slotIndex + slotsPerEpoch) {
+            minipoolPerformanceForRange[minipoolAddress].missing.push(slot)
+            continue
+          }
           const rocketMinipoolBondReducer = elState['rocketMinipoolBondReducer']
           const currentBond = BigInt(elState[minipoolAddress]['getNodeDepositBalance'])
           const currentFee = BigInt(elState[minipoolAddress]['getNodeFee'])
@@ -697,10 +707,8 @@ log(3, `scoring attestations...`)
             {bond: previousBond, fee: previousFee} :
             {bond: currentBond, fee: currentFee}
           const minipoolScore = (BigInt(1e18) - fee) * bond / BigInt(32e18) + fee
-          if (!(minipoolAddress in minipoolScoresForRange))
-            minipoolScoresForRange[minipoolAddress] = minipoolScore
-          else
-            minipoolScoresForRange[minipoolAddress] += minipoolScore
+          minipoolPerformanceForRange[minipoolAddress].score += minipoolScore
+          minipoolPerformanceForRange[minipoolAddress].successes += 1
           totalMinipoolScoreForRange += minipoolScore
           successfulAttestationsForRange += 1n
         }
@@ -708,17 +716,22 @@ log(3, `scoring attestations...`)
       const data = {
         total: totalMinipoolScoreForRange,
         attestations: successfulAttestationsForRange,
-        scores: minipoolScoresForRange
+        performance: minipoolPerformanceForRange
       }
       writeFileSync(cacheFilename, JSON.stringify(data, stringifier))
     }
     totalMinipoolScore += totalMinipoolScoreForRange
     successfulAttestations += successfulAttestationsForRange
-    for (const [minipoolAddress, minipoolScore] of Object.entries(minipoolScoresForRange)) {
-      if (!(minipoolAddress in minipoolScores))
-        minipoolScores[minipoolAddress] = minipoolScore
-      else
-        minipoolScores[minipoolAddress] += minipoolScore
+    for (const [minipoolAddress, {score, successes, missing}] of Object.entries(minipoolPerformanceForRange)) {
+      if (!(minipoolAddress in minipoolPerformance))
+        minipoolPerformance[minipoolAddress] = {
+          attestationScore: 0n,
+          successfulAttestations: 0,
+          missingAttestationSlots: []
+        }
+      minipoolPerformance[minipoolAddress].attestationScore += score
+      minipoolPerformance[minipoolAddress].successfulAttestations += successes
+      minipoolPerformance[minipoolAddress].missingAttestationSlots.push(...missing)
     }
     first_epoch = last_epoch + 1
   }
@@ -726,6 +739,7 @@ log(3, `scoring attestations...`)
 log(3, `scored attestations`)
 log(2, `successfulAttestations: ${successfulAttestations}`)
 log(2, `totalMinipoolScore: ${totalMinipoolScore}`)
+writeFileSync('minipool-performance.json', JSON.stringify(minipoolPerformance, stringifier))
 
 const nodeRewards = new Map()
 function addNodeReward(nodeAddress, token, amount) {
@@ -743,8 +757,8 @@ let totalEthForMinipools = 0n
 
 log(2, `totalNodeOpShare: ${totalNodeOpShare}`)
 
-for (const [minipoolAddress, minipoolScore] of Object.entries(minipoolScores)) {
-  const minipoolEth = totalNodeOpShare * minipoolScore / totalMinipoolScore
+for (const [minipoolAddress, {attestationScore}] of Object.entries(minipoolPerformance)) {
+  const minipoolEth = totalNodeOpShare * attestationScore / totalMinipoolScore
   addNodeReward(elState[minipoolAddress]['getNodeAddress'], 'smoothing_pool_eth', minipoolEth)
   totalEthForMinipools += minipoolEth
 }
