@@ -685,6 +685,7 @@ log(3, `scoring attestations...`)
         const {optInTime, optOutTime} = nodeSmoothingTimes.get(nodeAddress)
         for (const [epoch, {slot, attested_slot}] of Object.entries(epochs)) {
           const slotIndex = BigInt(slot)
+          if (slotIndex < bnStartBlock) continue
           const blockTime = genesisTime + secondsPerSlot * slotIndex
           if (blockTime < optInTime || blockTime > optOutTime) continue
           const statusTime = BigInt(elState[minipoolAddress]['getStatusTime'])
