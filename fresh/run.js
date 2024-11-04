@@ -5,6 +5,9 @@ import { MulticallProvider } from "@ethers-ext/provider-multicall"
 
 function tryBigInt(s) { try { return BigInt(s) } catch { return false } }
 
+const max = (a, b) => a < b ? b : a
+const min = (a, b) => a <= b ? a : b
+
 const timestamp = () => Intl.DateTimeFormat('en-GB',
   {hour: 'numeric', minute: 'numeric', second: 'numeric'})
   .format(new Date())
@@ -24,10 +27,15 @@ const farFutureTime = BigInt(1e18)
 
 const thirteen6137Ether = ethers.parseEther('13.6137')
 const oneEther = ethers.parseEther('1')
+const oneGwei = ethers.parseUnits('1', 'gwei')
+const tenEther = 10n * oneEther
+const oneTenthEther = oneEther / 10n
+const oneFourHundredthEther = 4n * oneEther / 100n
 const twoEther = 2n * oneEther
 const oneHundredEther = 100n * oneEther
 const thirteenEther = 13n * oneEther
 const fifteenEther = 15n * oneEther
+const thirtyTwoEther = 32n * oneEther
 function log2(x) {
   const exponent = BigInt(Math.floor(Math.log2(parseInt(x / oneEther))))
   let result = exponent * oneEther
@@ -48,7 +56,7 @@ const ln = (x) => (log2(x) * oneEther) / 1442695040888963407n
 
 const stringifier = (_, v) => typeof v == 'bigint' ? `0x${v.toString(16)}` : v
 
-const perfUrl = process.env.PERF_URL
+const perfUrl = process.env.PERF_URL || 'http://localhost:8789'
 const beaconRpcUrl = process.env.BN_URL || 'http://localhost:5052'
 const provider = new ethers.JsonRpcProvider(process.env.RPC_URL || 'http://localhost:8545')
 const networkName = await provider.getNetwork().then(n => n.name)
@@ -113,7 +121,8 @@ const getELState = async (blockTag) => {
     ['rocketNetworkPenalties', ['function getPenaltyCount(address) view returns (uint256)']],
     ['rocketMinipoolBondReducer', ['function getLastBondReductionPrevValue(address) view returns (uint256)',
                                    'function getLastBondReductionPrevNodeFee(address) view returns (uint256)',
-                                   'function getLastBondReductionTime(address) view returns (uint256)']]
+                                   'function getLastBondReductionTime(address) view returns (uint256)']],
+    // TODO ['rocketUpgradeOneDotFour', 'function executed() view returns(bool)'],
   ]
   const contracts = new Map()
   const promises = []
@@ -342,6 +351,10 @@ log(1, `targetSlotEpoch: ${targetSlotEpoch}`)
 targetBcSlot = (targetSlotEpoch + 1n) * slotsPerEpoch - 1n
 log(2, `last (possibly missing) slot in epoch: ${targetBcSlot}`)
 
+// allow for partial intervals
+const actualEndTime = genesisTime + ((targetSlotEpoch + 1n) * slotsPerEpoch - 1n) * secondsPerSlot
+log(1, `actualEndTime: ${actualEndTime}`)
+
 async function checkSlotExists(slotNumber) {
   const path = `/eth/v1/beacon/headers/${slotNumber}`
   const url = new URL(path, beaconRpcUrl)
@@ -423,6 +436,10 @@ let totalEffectiveRplStake = 0n
 let totalNodeWeight = 0n
 const rpip30C = BigInt(Math.min(6, parseInt(currentIndex) - rpip30Interval + 1))
 
+const ratio = BigInt(elState['rocketNetworkPrices']['getRPLPrice'][''])
+const minCollateralFraction = BigInt(elState['rocketDAOProtocolSettingsNode']['getMinimumPerMinipoolStake'][''])
+const maxCollateralFraction = 150n * 10n ** 16n
+
 const allPubkeys = Array.from(new Set(Object.values(elState['rocketMinipoolManager']['getMinipoolPubkey'])))
 log(3, `allPubkeys count: ${allPubkeys.length}`)
 log(3, `allPubkeys: ${allPubkeys.slice(0, 5)}...`)
@@ -445,8 +462,8 @@ const validatorStatuses = {}
     if (response.status !== 200)
       throw new Error(`Unexpected response getting validator statuses: ${response.status}: ${await response.text()}`)
     const items = await response.json().then(j => j.data)
-    for (const {validator: {pubkey, activation_epoch, exit_epoch}, status} of items)
-      validatorStatuses[pubkey] = {activation_epoch, exit_epoch, status}
+    for (const {validator: {pubkey, activation_epoch, exit_epoch}, index, status} of items)
+      validatorStatuses[pubkey] = {activation_epoch, exit_epoch, index, status}
     writeFileSync(cacheFilename, JSON.stringify(validatorStatuses))
   }
 }
@@ -459,20 +476,43 @@ function getEligibility(activationEpoch, exitEpoch) {
   return deposited && (currentIndex >= 15n || activated) && notExited
 }
 
+function getStakedRplValueInEth(nodeStake) {
+  return nodeStake * ratio / oneEther
+}
+
+function getPercentOfBorrowedEth(stakedRplValueInEth, eligibleBorrowedEth) {
+  return stakedRplValueInEth * oneHundredEther / eligibleBorrowedEth
+}
+
 function getNodeWeight(eligibleBorrowedEth, nodeStake) {
   if (currentIndex < rpip30Interval) return 0n
   if (!eligibleBorrowedEth) return 0n
-  const stakedRplValueInEth = nodeStake * ratio / oneEther
-  const percentOfBorrowedEth = stakedRplValueInEth * oneHundredEther / eligibleBorrowedEth
+  const stakedRplValueInEth = getStakedRplValueInEth(nodeStake)
+  const percentOfBorrowedEth = getPercentOfBorrowedEth(stakedRplValueInEth, eligibleBorrowedEth)
   if (percentOfBorrowedEth <= fifteenEther)
     return 100n * stakedRplValueInEth
   else
     return ((thirteen6137Ether + 2n * ln(percentOfBorrowedEth - thirteenEther)) * eligibleBorrowedEth) / oneEther
 }
 
-const ratio = BigInt(elState['rocketNetworkPrices']['getRPLPrice'][''])
-const minCollateralFraction = BigInt(elState['rocketDAOProtocolSettingsNode']['getMinimumPerMinipoolStake'][''])
-const maxCollateralFraction = 150n * 10n ** 16n
+function getSaturnZeroFee(baseFee, nodeAddress, pubkey, minipoolAddress) {
+  const nodeStake = BigInt(elState['rocketNodeStaking']['getNodeRPLStake'][nodeAddress])
+  const {activation_epoch, exit_epoch} = validatorStatuses[pubkey]
+  const eligibleBorrowedEth = getEligibility(activation_epoch, exit_epoch) ?
+    BigInt(elState[minipoolAddress]['getUserDepositBalance']) : 0n
+  const percentOfBorrowedEth = getPercentOfBorrowedEth(getStakedRplValueInEth(nodeStake), eligibleBorrowedEth)
+  return max(baseFee,
+    oneTenthEther +
+    (oneFourHundredthEther * min(tenEther, percentOfBorrowedEth) / tenEther)
+  )
+}
+
+function getTotalFee(baseFee, currentBond, nodeAddress, pubkey, minipoolAddress) {
+  const isEligibleInterval = true // TODO: change when rocketUpgradeOneDotFour executed is true
+  return currentBond < 16n * oneEther && isEligibleInterval ?
+    getSaturnZeroFee(baseFee, nodeAddress, pubkey, minipoolAddress)
+    : baseFee
+}
 
 const nodeSmoothingTimes = new Map()
 const eligiblePubkeysByNode = new Map()
@@ -704,9 +744,10 @@ log(3, `scoring attestations...`)
           const previousBond = BigInt(rocketMinipoolBondReducer['getLastBondReductionPrevValue'][minipoolAddress])
           const previousFee = BigInt(rocketMinipoolBondReducer['getLastBondReductionPrevNodeFee'][minipoolAddress])
           const lastReduceTime = BigInt(rocketMinipoolBondReducer['getLastBondReductionTime'][minipoolAddress])
-          const {bond, fee} = lastReduceTime > 0 && lastReduceTime > blockTime ?
-            {bond: previousBond, fee: previousFee} :
-            {bond: currentBond, fee: currentFee}
+          const {bond, baseFee} = lastReduceTime > 0 && lastReduceTime > blockTime ?
+            {bond: previousBond, baseFee: previousFee} :
+            {bond: currentBond, baseFee: currentFee}
+          const fee = getTotalFee(baseFee, currentBond, nodeAddress, pubkey, minipoolAddress)
           const minipoolScore = (BigInt(1e18) - fee) * bond / BigInt(32e18) + fee
           minipoolPerformanceForRange[minipoolAddress].score += minipoolScore
           minipoolPerformanceForRange[minipoolAddress].successes += 1
@@ -762,6 +803,150 @@ for (const [minipoolAddress, {attestationScore}] of Object.entries(minipoolPerfo
   const minipoolEth = totalNodeOpShare * attestationScore / totalMinipoolScore
   addNodeReward(elState[minipoolAddress]['getNodeAddress'], 'smoothing_pool_eth', minipoolEth)
   totalEthForMinipools += minipoolEth
+}
+
+const bonusWindowsByMinipool = {}
+const minipoolsByBonusStart = {}
+const minipoolsByBonusEnd = {}
+const minipoolWithdrawals = {}
+const minipoolBalances = {}
+let minBonusWindowStart = targetBcSlot + slotsPerEpoch
+let maxBonusWindowEnd = 0n
+for (const [pubkey, minipoolAddress] of minipoolsByPubkey.entries()) {
+  minipoolWithdrawals[minipoolAddress] = 0n
+  minipoolBalances[minipoolAddress] = {}
+  const nodeAddress = elState[minipoolAddress]['getNodeAddress']
+  const statusTime = BigInt(elState[minipoolAddress]['getStatusTime'])
+  const {optInTime, optOutTime} = nodeSmoothingTimes.get(nodeAddress)
+  const rocketMinipoolBondReducer = elState['rocketMinipoolBondReducer']
+  const lastReduceTime = BigInt(rocketMinipoolBondReducer['getLastBondReductionTime'][minipoolAddress])
+  const eligibleStartTime = max(startTime, max(statusTime, max(optInTime, lastReduceTime)))
+  const eligibleEndTime = min(actualEndTime, optOutTime)
+  const rewardStartBcSlot = (eligibleStartTime - genesisTime + (secondsPerSlot - 1n)) / secondsPerSlot
+  const rewardEndBcSlot = (eligibleEndTime - genesisTime + (secondsPerSlot - 1n)) / secondsPerSlot
+  bonusWindowsByMinipool[minipoolAddress] = {rewardStartBcSlot, rewardEndBcSlot}
+  const startKey = rewardStartBcSlot.toString()
+  const endKey = rewardEndBcSlot.toString()
+  minipoolsByBonusStart[startKey] ||= []
+  minipoolsByBonusEnd[endKey] ||= []
+  const mp = {pubkey, minipoolAddress}
+  minipoolsByBonusStart[startKey].push(mp)
+  minipoolsByBonusEnd[endKey].push(mp)
+  if (rewardStartBcSlot < minBonusWindowStart)
+    minBonusWindowStart = rewardStartBcSlot
+  if (maxBonusWindowEnd < rewardEndBcSlot)
+    maxBonusWindowEnd = rewardEndBcSlot
+}
+
+log(3, `fetching start and end balances...`)
+// TODO: cache?
+{
+  const path = slot => `/eth/v1/beacon/states/${slot}/validator_balances`
+  const options = pubkeys => ({
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(pubkeys)
+  })
+  async function getBalance(mpsByKey, key) {
+    for (const [bonusSlot, mps] of Object.entries(mpsByKey)) {
+      log(3, `processing ${mps.length} MPs for ${key} balance slot ${bonusSlot}...`)
+      const cacheFilename = `b-${key}-${bonusSlot}.json`
+      let beaconData
+      try {
+        beaconData = JSON.parse(readFileSync(cacheFilename))
+      }
+      catch {
+        const url = new URL(`${beaconRpcUrl}${path(bonusSlot)}`)
+        const response = await fetch(url, options(mps.map(({pubkey}) => pubkey)))
+        if (response.status !== 200)
+          console.warn(`Unexpected response status getting ${bonusSlot} ${key} balances: ${response.status}`)
+        const { data } = await response.json()
+        beaconData = data
+        writeFileSync(cacheFilename, JSON.stringify(data))
+      }
+      const addressByIndex = {}
+      for (const {pubkey, minipoolAddress} of mps)
+        addressByIndex[validatorStatuses[pubkey].index] = minipoolAddress
+      for (const {index, balance} of beaconData) {
+        minipoolBalances[addressByIndex[index]][key] = BigInt(balance) * oneGwei
+      }
+    }
+  }
+  await getBalance(minipoolsByBonusStart, 'start')
+  await getBalance(minipoolsByBonusEnd, 'end')
+}
+
+log(3, `fetching withdrawals from ${minBonusWindowStart} to ${maxBonusWindowEnd}...`)
+{
+  let firstSlot = minBonusWindowStart
+  while (firstSlot < maxBonusWindowEnd) {
+    const pastLastSlot = min(firstSlot + BigInt(EPOCHS_PER_QUERY) * slotsPerEpoch, maxBonusWindowEnd)
+    const minipoolWithdrawalsForRange = {}
+    const cacheFilename = `cache/w-${firstSlot}-${pastLastSlot}.json`
+    try {
+      Object.assign(minipoolWithdrawalsForRange, JSON.parse(readFileSync(cacheFilename)))
+    }
+    catch {
+      let slot = firstSlot
+      while (slot < pastLastSlot) {
+        if (slot % 100n == 0n) log(3, `up to ${slot}...`)
+        const path = `/eth/v2/beacon/blocks/${slot}`
+        const url = new URL(`${beaconRpcUrl}${path}`)
+        const response = await fetch(url)
+        if (response.status !== 200 && response.status !== 404)
+          throw new Error(`Unexpected response getting withdrawals for ${slot}: ${response.status}: ${await response.text()}`)
+        const slotWithdrawals = response.status === 404 ? [] :
+          await response.json().then(j => j.data.message.body.execution_payload.withdrawals)
+        for (const {address, amount} of slotWithdrawals) {
+          const {rewardStartBcSlot, rewardEndBcSlot} = bonusWindowsByMinipool[address] || {rewardEndBcSlot: 0n}
+          if (rewardStartBcSlot <= slot && slot < rewardEndBcSlot) {
+            minipoolWithdrawalsForRange[address] ||= 0n
+            minipoolWithdrawalsForRange[address] += BigInt(amount) * oneGwei
+          }
+        }
+        slot += 1n
+      }
+      for (const [minipoolAddress, withdrawn] of Object.entries(minipoolWithdrawalsForRange)) {
+        minipoolWithdrawalsForRange[minipoolAddress] = withdrawn.toString()
+      }
+      writeFileSync(cacheFilename, JSON.stringify(minipoolWithdrawalsForRange))
+    }
+    for (const [minipoolAddress, withdrawn] of Object.entries(minipoolWithdrawalsForRange)) {
+      minipoolWithdrawals[minipoolAddress] += BigInt(withdrawn)
+    }
+    firstSlot = pastLastSlot
+  }
+}
+
+const nodeBonus = {}
+let totalConsensusBonus = 0n
+for (const minipoolAddress of minipoolsByPubkey.values()) {
+  const currentFee = BigInt(elState[minipoolAddress]['getNodeFee'])
+  const nodeAddress = elState[minipoolAddress]['getNodeAddress']
+  const pubkey = elState['rocketMinipoolManager']['getMinipoolPubkey'][minipoolAddress]
+  const currentBond = BigInt(elState[minipoolAddress]['getNodeDepositBalance'])
+  const rewardBaseFee = currentFee
+  const rewardBond = currentBond
+  const bonusFee = getTotalFee(rewardBaseFee, rewardBond, nodeAddress, pubkey, minipoolAddress)
+  const withdrawn = minipoolWithdrawals[minipoolAddress]
+  const {end: endBalance, start: startBalance} = minipoolBalances[minipoolAddress]
+  const consensusIncome = endBalance + withdrawn - max(thirtyTwoEther, startBalance)
+  const bonusShare = bonusFee * (thirtyTwoEther - rewardBond) / thirtyTwoEther
+  const minipoolBonus = max(0n, consensusIncome * bonusShare / oneEther)
+  nodeBonus[nodeAddress] ||= 0n
+  nodeBonus[nodeAddress] += minipoolBonus
+  totalConsensusBonus += minipoolBonus
+}
+
+const remainingBalance = smoothingPoolBalance - totalEthForMinipools
+if (totalConsensusBonus > remainingBalance) {
+  for (const [nodeAddress, rawBonus] of Object.entries(nodeBonus))
+    nodeBonus[nodeAddress] = rawBonus * remainingBalance / totalConsensusBonus
+}
+
+for (const [nodeAddress, bonus] of Object.entries(nodeBonus)) {
+  addNodeReward(nodeAddress, 'smoothing_pool_eth', bonus)
+  totalEthForMinipools += bonus
 }
 
 log(2, `totalEthForMinipools: ${totalEthForMinipools}`)
@@ -824,7 +1009,7 @@ const sszFile = {
   network: 1,
   index: currentIndex,
   start_time: genesisTime + bnStartEpoch * slotsPerEpoch * secondsPerSlot,
-  end_time: genesisTime + ((targetSlotEpoch + 1n) * slotsPerEpoch - 1n) * secondsPerSlot,
+  end_time: actualEndTime,
   consensus_start_block,
   consensus_end_block: targetBcSlot,
   execution_start_block: await getBlockNumberFromSlot(consensus_start_block),
