@@ -850,7 +850,7 @@ log(3, `fetching start and end balances...`)
   async function getBalance(mpsByKey, key) {
     for (const [bonusSlot, mps] of Object.entries(mpsByKey)) {
       log(3, `processing ${mps.length} MPs for ${key} balance slot ${bonusSlot}...`)
-      const cacheFilename = `b-${key}-${bonusSlot}.json`
+      const cacheFilename = `cache/b-${key}-${bonusSlot}.json`
       let beaconData
       try {
         beaconData = JSON.parse(readFileSync(cacheFilename))
