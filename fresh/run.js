@@ -481,6 +481,7 @@ function getStakedRplValueInEth(nodeStake) {
 }
 
 function getPercentOfBorrowedEth(stakedRplValueInEth, eligibleBorrowedEth) {
+  if (eligibleBorrowedEth == 0n) return 0n
   return stakedRplValueInEth * oneHundredEther / eligibleBorrowedEth
 }
 
