@@ -817,8 +817,6 @@ const minipoolBalances = {}
 let minBonusWindowStart = targetBcSlot + slotsPerEpoch
 let maxBonusWindowEnd = 0n
 for (const [pubkey, minipoolAddress] of minipoolsByPubkey.entries()) {
-  minipoolWithdrawals[minipoolAddress] = 0n
-  minipoolBalances[minipoolAddress] = {}
   const nodeAddress = elState[minipoolAddress]['getNodeAddress']
   const statusTime = BigInt(elState[minipoolAddress]['getStatusTime'])
   const {optInTime, optOutTime} = nodeSmoothingTimes.get(nodeAddress)
@@ -826,6 +824,9 @@ for (const [pubkey, minipoolAddress] of minipoolsByPubkey.entries()) {
   const lastReduceTime = BigInt(rocketMinipoolBondReducer['getLastBondReductionTime'][minipoolAddress])
   const eligibleStartTime = max(startTime, max(statusTime, max(optInTime, lastReduceTime)))
   const eligibleEndTime = min(actualEndTime, optOutTime)
+  if (eligibleStartTime >= eligibleEndTime) continue
+  minipoolBalances[minipoolAddress] = {}
+  minipoolWithdrawals[minipoolAddress] = 0n
   const rewardStartBcSlot = (eligibleStartTime - genesisTime + (secondsPerSlot - 1n)) / secondsPerSlot
   const rewardEndBcSlot = (eligibleEndTime - genesisTime + (secondsPerSlot - 1n)) / secondsPerSlot
   bonusWindowsByMinipool[minipoolAddress] = {rewardStartBcSlot, rewardEndBcSlot}
@@ -924,8 +925,7 @@ log(3, `fetching withdrawals from ${minBonusWindowStart} to ${maxBonusWindowEnd}
 
 const nodeBonus = {}
 let totalConsensusBonus = 0n
-for (const minipoolAddress of minipoolsByPubkey.values()) {
-  const withdrawn = minipoolWithdrawals[minipoolAddress]
+for (const [minipoolAddress, withdrawn] of Object.entries(minipoolWithdrawals)) {
   const {end: endBalance, start: startBalance} = minipoolBalances[minipoolAddress]
   const nodeAddress = elState[minipoolAddress]['getNodeAddress']
   const {optOutTime} = nodeSmoothingTimes.get(nodeAddress)
