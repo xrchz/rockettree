@@ -497,25 +497,24 @@ function getNodeWeight(eligibleBorrowedEth, nodeStake) {
     return ((thirteen6137Ether + 2n * ln(percentOfBorrowedEth - thirteenEther)) * eligibleBorrowedEth) / oneEther
 }
 
-function getSaturnZeroFee(baseFee, minipoolAddress) {
-  const nodeAddress = elState[minipoolAddress]['getNodeAddress']
-  const pubkey = elState['rocketMinipoolManager']['getMinipoolPubkey'][minipoolAddress]
+const eligibleBorrowedEthByNode = {}
+
+function getSaturnZeroFee(baseFee, nodeAddress) {
   const nodeStake = BigInt(elState['rocketNodeStaking']['getNodeRPLStake'][nodeAddress])
-  const {activation_epoch, exit_epoch} = validatorStatuses[pubkey]
-  const eligibleBorrowedEth = getEligibility(activation_epoch, exit_epoch) ?
-    BigInt(elState[minipoolAddress]['getUserDepositBalance']) : 0n
-  const percentOfBorrowedEth = getPercentOfBorrowedEth(getStakedRplValueInEth(nodeStake), eligibleBorrowedEth)
+  const eligibleBorrowedEth = eligibleBorrowedEthByNode[nodeAddress]
+  const stakedRplValueInEth = getStakedRplValueInEth(nodeStake)
+  const percentOfBorrowedEth = getPercentOfBorrowedEth(stakedRplValueInEth, eligibleBorrowedEth)
   return max(baseFee,
     oneTenthEther +
     (oneFourHundredthEther * min(tenEther, percentOfBorrowedEth) / tenEther)
   )
 }
 
-function getTotalFee(minipoolFee, minipoolBond, minipoolAddress) {
+function getTotalFee(minipoolFee, minipoolBond, nodeAddress) {
   const isEligibleBond = minipoolBond < sixteenEther
   const isEligibleInterval = true // TODO: change when rocketUpgradeOneDotFour executed is true
   return isEligibleBond && isEligibleInterval ?
-    getSaturnZeroFee(minipoolFee, minipoolAddress)
+    getSaturnZeroFee(minipoolFee, nodeAddress)
     : minipoolFee
 }
 
@@ -541,7 +540,7 @@ for (const nodeAddress of nodeAddresses) {
   const minipoolIndicesToProcess = Array.from(Array(parseInt(minipoolCount)).keys())
   const nodeStake = BigInt(elState['rocketNodeStaking']['getNodeRPLStake'][nodeAddress])
   const registrationTime = BigInt(elState['rocketNodeManager']['getNodeRegistrationTime'][nodeAddress])
-  let eligibleBorrowedEth = 0n
+  eligibleBorrowedEthByNode[nodeAddress] = 0n
   let eligibleBondedEth = 0n
   for (const i of Array(parseInt(minipoolCount)).keys()) {
     const minipoolAddress = elState['rocketMinipoolManager']['getNodeMinipoolAt'][`${nodeAddress},${i}`]
@@ -551,7 +550,7 @@ for (const nodeAddress of nodeAddresses) {
     if (!(pubkey in validatorStatuses)) continue
     const {activation_epoch, exit_epoch, status} = validatorStatuses[pubkey]
     if (getEligibility(activation_epoch, exit_epoch)) {
-      eligibleBorrowedEth += BigInt(elState[minipoolAddress]['getUserDepositBalance'])
+      eligibleBorrowedEthByNode[nodeAddress] += BigInt(elState[minipoolAddress]['getUserDepositBalance'])
       eligibleBondedEth += BigInt(elState[minipoolAddress]['getNodeDepositBalance'])
     }
     const penaltyCount = BigInt(elState['rocketNetworkPenalties']['getPenaltyCount'][minipoolAddress])
@@ -578,6 +577,7 @@ for (const nodeAddress of nodeAddresses) {
     }
 
   }
+  const eligibleBorrowedEth = eligibleBorrowedEthByNode[nodeAddress]
   const minCollateral = eligibleBorrowedEth * minCollateralFraction / ratio
   const maxCollateral = eligibleBondedEth * maxCollateralFraction / ratio
   let [nodeEffectiveStake, nodeWeight] = [0n, 0n]
@@ -765,7 +765,7 @@ log(3, `scoring attestations...`)
           const {bond, baseFee} = lastReduceTime > 0 && lastReduceTime > blockTime ?
             {bond: previousBond, baseFee: previousFee} :
             {bond: currentBond, baseFee: currentFee}
-          const scoreFee = getTotalFee(baseFee, bond, minipoolAddress)
+          const scoreFee = getTotalFee(baseFee, bond, nodeAddress)
           const minipoolScore = (BigInt(1e18) - scoreFee) * bond / BigInt(32e18) + scoreFee
           minipoolPerformanceForRange[minipoolAddress].score += minipoolScore
           minipoolPerformanceForRange[minipoolAddress].successes += 1
@@ -944,10 +944,10 @@ let totalConsensusBonus = 0n
 for (const [minipoolAddress, consensusIncome] of Object.entries(minipoolWithdrawals)) {
   const currentBond = BigInt(elState[minipoolAddress]['getNodeDepositBalance'])
   const currentFee = BigInt(elState[minipoolAddress]['getNodeFee'])
-  const bonusFee = getTotalFee(currentFee, currentBond, minipoolAddress) - currentFee
+  const nodeAddress = elState[minipoolAddress]['getNodeAddress']
+  const bonusFee = getTotalFee(currentFee, currentBond, nodeAddress) - currentFee
   const bonusShare = bonusFee * (thirtyTwoEther - currentBond) / thirtyTwoEther
   const minipoolBonus = max(0n, consensusIncome * bonusShare / oneEther)
-  const nodeAddress = elState[minipoolAddress]['getNodeAddress']
   nodeBonus[nodeAddress] ||= 0n
   nodeBonus[nodeAddress] += minipoolBonus
   totalConsensusBonus += minipoolBonus
