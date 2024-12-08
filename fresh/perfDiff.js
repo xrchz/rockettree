@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-const official = JSON.parse(readFileSync('rp-minipool-performance-mainnet-22.json')).minipoolPerformance
+const official = JSON.parse(readFileSync('v10-29-perf.json')).minipoolPerformance
 const rockettree = JSON.parse(readFileSync('minipool-performance.json'))
 const rockettreekeys = Object.keys(rockettree).map(a => a.toLowerCase())
 const officialkeys = Object.keys(official)
@@ -23,12 +23,12 @@ for (const [minipool, {attestationScore, missingAttestationSlots, successfulAtte
     console.log(`${minipool} discrepancy: ${BigInt(officialScore)} vs ${BigInt(attestationScore)}`)
     console.log(`${minipool} successes: ${BigInt(officialAttestations)} vs ${BigInt(successfulAttestations)}`)
     const inOfficialOnly = officialMissing.filter(x => !missingAttestationSlots.includes(x))
+    const inOfficialOnlyEpochs = new Set(inOfficialOnly.map(x => BigInt(x) / 32n))
     const inRocketTreeOnly = missingAttestationSlots.filter(x => !officialMissing.includes(x))
-    console.log(`${minipool} missing: ${inOfficialOnly} vs ${inRocketTreeOnly}`)
-    for (const slot of inOfficialOnly)
-      discrepancyEpochs.add(BigInt(slot) / 32n)
-    for (const slot of inRocketTreeOnly)
-      discrepancyEpochs.add(BigInt(slot) / 32n)
+    const inRocketTreeOnlyEpochs = new Set(inRocketTreeOnly.map(x => BigInt(x) / 32n))
+    console.log(`${minipool} missing: ${inOfficialOnly} (${Array.from(inOfficialOnlyEpochs)}) vs ${inRocketTreeOnly} (${Array.from(inRocketTreeOnlyEpochs)})`)
+    inOfficialOnlyEpochs.forEach(x => discrepancyEpochs.add(x))
+    inRocketTreeOnlyEpochs.forEach(x => discrepancyEpochs.add(x))
   }
 }
 console.log(`discrepancy epochs: ${Array.from(discrepancyEpochs.values()).toSorted()}`)
