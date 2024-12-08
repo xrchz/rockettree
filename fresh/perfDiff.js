@@ -8,8 +8,9 @@ for (const key of officialkeys) {
   if (!rockettreekeys.includes(key))
     console.log(`${key} in official but not rockettree`)
 }
-for (const key of rockettreekeys) {
-  if (!officialkeys.includes(key))
+for (const key of Object.keys(rockettree)) {
+  if (rockettree[key].successfulAttestations == 0) continue
+  if (!officialkeys.includes(key.toLowerCase()))
     console.log(`${key} in rockettree but not official`)
 }
 const discrepancyEpochs = new Set()
