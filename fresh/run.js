@@ -463,8 +463,8 @@ const validatorStatuses = {}
     if (response.status !== 200)
       throw new Error(`Unexpected response getting validator statuses: ${response.status}: ${await response.text()}`)
     const items = await response.json().then(j => j.data)
-    for (const {validator: {pubkey, activation_epoch, exit_epoch}, index, status} of items)
-      validatorStatuses[pubkey] = {activation_epoch, exit_epoch, index, status}
+    for (const {validator: {pubkey, activation_epoch, exit_epoch, withdrawable_epoch}, index, status} of items)
+      validatorStatuses[pubkey] = {activation_epoch, exit_epoch, withdrawable_epoch, index, status}
     writeFileSync(cacheFilename, JSON.stringify(validatorStatuses))
   }
 }
@@ -921,9 +921,14 @@ log(3, `fetching withdrawals from ${minBonusWindowStart} to ${maxBonusWindowEnd}
         for (const {address, amount} of slotWithdrawals) {
           const minipoolAddress = ethers.getAddress(address)
           const {rewardStartBcSlot, rewardEndBcSlot} = bonusWindowsByMinipool[minipoolAddress] || {rewardEndBcSlot: 0n}
+          const pubkey = elState['rocketMinipoolManager']['getMinipoolPubkey'][minipoolAddress]
+          const {withdrawable_epoch} = validatorStatuses[pubkey] || {}
           if (rewardStartBcSlot <= slot && slot < rewardEndBcSlot) {
             minipoolWithdrawalsForRange[minipoolAddress] ||= 0n
-            minipoolWithdrawalsForRange[minipoolAddress] += BigInt(amount) * oneGwei
+            let amountWei = BigInt(amount) * oneGwei
+            if (withdrawable_epoch && withdrawable_epoch != 'FAR_FUTURE_EPOCH' && slot >= BigInt(withdrawable_epoch) * slotsPerEpoch)
+              amountWei = max(0n, amountWei - thirtyTwoEther)
+            minipoolWithdrawalsForRange[minipoolAddress] += amountWei
           }
         }
         slot += 1n
