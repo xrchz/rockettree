@@ -799,7 +799,6 @@ log(3, `scoring attestations...`)
 log(3, `scored attestations`)
 log(2, `successfulAttestations: ${successfulAttestations}`)
 log(2, `totalMinipoolScore: ${totalMinipoolScore}`)
-writeFileSync('minipool-performance.json', JSON.stringify(minipoolPerformance, stringifier))
 
 const nodeRewards = new Map()
 function addNodeReward(nodeAddress, token, amount) {
@@ -954,10 +953,18 @@ for (const [minipoolAddress, consensusIncome] of Object.entries(minipoolWithdraw
   const bonusFee = getTotalFee(currentFee, currentBond, nodeAddress) - currentFee
   const bonusShare = bonusFee * (thirtyTwoEther - currentBond) / thirtyTwoEther
   const minipoolBonus = max(0n, consensusIncome * bonusShare / oneEther)
+  if (!(minipoolAddress in minipoolPerformance)) {
+    // console.log(`WARNING: ${minipoolAddress} not in minipoolPerformance`)
+    minipoolPerformance[minipoolAddress] = {}
+  }
+  minipoolPerformance[minipoolAddress].bonus = minipoolBonus
+  minipoolPerformance[minipoolAddress].consensusIncome = consensusIncome
   nodeBonus[nodeAddress] ||= 0n
   nodeBonus[nodeAddress] += minipoolBonus
   totalConsensusBonus += minipoolBonus
 }
+
+writeFileSync('minipool-performance.json', JSON.stringify(minipoolPerformance, stringifier))
 
 const remainingBalance = smoothingPoolBalance - totalEthForMinipools
 if (totalConsensusBonus > remainingBalance) {

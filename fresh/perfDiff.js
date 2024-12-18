@@ -14,13 +14,16 @@ for (const key of Object.keys(rockettree)) {
     console.log(`${key} in rockettree but not official`)
 }
 const discrepancyEpochs = new Set()
-for (const [minipool, {attestationScore, missingAttestationSlots, successfulAttestations}] of Object.entries(rockettree)) {
+for (const [minipool, {attestationScore, missingAttestationSlots, successfulAttestations, bonus, consensusIncome}] of Object.entries(rockettree)) {
   const minipoolLower = minipool.toLowerCase()
   const {successfulAttestations: officialAttestations,
          attestationScore: officialScore,
-         missingAttestationSlots: officialMissing} = minipoolLower in official ? official[minipoolLower] :
-    {successfulAttestations: 0, attestationScore: "0", missingAttestationSlots: []}
-  if (BigInt(officialScore) != BigInt(attestationScore)) {
+         missingAttestationSlots: officialMissing,
+         bonusEthEarned: officialBonus,
+         consensusIncome: officialIncome,
+        } = minipoolLower in official ? official[minipoolLower] :
+    {successfulAttestations: 0, attestationScore: "0", missingAttestationSlots: [], bonusEthEarned: null, consensusIncome: null}
+  if (BigInt(officialScore || 0) != BigInt(attestationScore || 0)) {
     console.log(`${minipool} discrepancy: ${BigInt(officialScore)} vs ${BigInt(attestationScore)}`)
     console.log(`${minipool} successes: ${BigInt(officialAttestations)} vs ${BigInt(successfulAttestations)}`)
     const inOfficialOnly = officialMissing.filter(x => !missingAttestationSlots.includes(x))
@@ -30,6 +33,13 @@ for (const [minipool, {attestationScore, missingAttestationSlots, successfulAtte
     console.log(`${minipool} missing: ${inOfficialOnly} (${Array.from(inOfficialOnlyEpochs)}) vs ${inRocketTreeOnly} (${Array.from(inRocketTreeOnlyEpochs)})`)
     inOfficialOnlyEpochs.forEach(x => discrepancyEpochs.add(x))
     inRocketTreeOnlyEpochs.forEach(x => discrepancyEpochs.add(x))
+  }
+  if (BigInt(bonus || 0) != BigInt(officialBonus || 0)) {
+    console.log(`${minipool} bonus discrepancy: ${bonus} vs ${officialBonus}`)
+  }
+  if (BigInt(consensusIncome || 0) != BigInt(officialIncome || 0)) {
+    if (officialIncome)
+      console.log(`${minipool} income discrepancy: ${consensusIncome} vs ${officialIncome}`)
   }
 }
 console.log(`discrepancy epochs: ${Array.from(discrepancyEpochs.values()).toSorted()}`)
