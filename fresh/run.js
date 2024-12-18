@@ -919,10 +919,11 @@ log(3, `fetching withdrawals from ${minBonusWindowStart} to ${maxBonusWindowEnd}
         const slotWithdrawals = response.status === 404 ? [] :
           await response.json().then(j => j.data.message.body.execution_payload.withdrawals)
         for (const {address, amount} of slotWithdrawals) {
-          const {rewardStartBcSlot, rewardEndBcSlot} = bonusWindowsByMinipool[address] || {rewardEndBcSlot: 0n}
+          const minipoolAddress = ethers.getAddress(address)
+          const {rewardStartBcSlot, rewardEndBcSlot} = bonusWindowsByMinipool[minipoolAddress] || {rewardEndBcSlot: 0n}
           if (rewardStartBcSlot <= slot && slot < rewardEndBcSlot) {
-            minipoolWithdrawalsForRange[address] ||= 0n
-            minipoolWithdrawalsForRange[address] += BigInt(amount) * oneGwei
+            minipoolWithdrawalsForRange[minipoolAddress] ||= 0n
+            minipoolWithdrawalsForRange[minipoolAddress] += BigInt(amount) * oneGwei
           }
         }
         slot += 1n
