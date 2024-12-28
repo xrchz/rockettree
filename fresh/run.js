@@ -355,6 +355,24 @@ log(2, `last (possibly missing) slot in epoch: ${targetBcSlot}`)
 const actualEndTime = genesisTime + ((targetSlotEpoch + 1n) * slotsPerEpoch - 1n) * secondsPerSlot
 log(1, `actualEndTime: ${actualEndTime}`)
 
+async function cachedBeaconRpc(path) {
+  const key = path.replaceAll('/', ':')
+  const cacheFilename = `cache/beacon/${key}.json`
+  try {
+    return JSON.parse(readFileSync(cacheFilename))
+  }
+  catch {
+    const url = `${beaconRpcUrl}${path}`
+    const response = await fetch(url)
+    if (response.status !== 200 && response.status !== 404)
+      throw new Error(`Unexpected response status getting ${path}: ${response.status} ${await response.text()}`)
+    const json = await response.json()
+    const result = {status: response.status, json}
+    writeFileSync(cacheFilename, JSON.stringify(result))
+    return result
+  }
+}
+
 async function checkSlotExists(slotNumber) {
   const path = `/eth/v1/beacon/headers/${slotNumber}`
   const url = new URL(path, beaconRpcUrl)
@@ -698,11 +716,9 @@ log(3, `fetching attestation duties...`)
         log(3, `d: ...${epoch}...`)
         const firstSlotInEpoch = epoch * parseInt(slotsPerEpoch)
         const path = `/eth/v1/beacon/states/${firstSlotInEpoch}/committees?epoch=${epoch}`
-        const url = new URL(`${beaconRpcUrl}${path}`)
-        const response = await fetch(url)
-        if (response.status !== 200)
-          throw new Error(`Unexpected response getting committees for ${epoch}: ${response.status}: ${await response.text()}`)
-        const committees = await response.json().then(j => j.data)
+        const {status, json: {data: committees}} = await cachedBeaconRpc(path)
+        if (status !== 200)
+          throw new Error(`Unexpected status getting committees for ${epoch}: ${status}`)
         for (const {index, slot, validators} of committees) {
           for (const [position, validator_index] of validators.entries()) {
             const selectedIndex = parseInt(validator_index)
@@ -839,15 +855,11 @@ log(3, `fetching attestations...`)
     let searchSlot = firstSlotInSearchEpoch
     while (searchSlot < firstSlotInSearchEpoch + slotsPerEpoch) {
       const path = `/eth/v1/beacon/blocks/${searchSlot}/attestations`
-      const url = `${beaconRpcUrl}${path}`
-      const response = await fetch(url)
-      if (response.status === 404) {
+      const {status, json: {data: slotAttestations}} = await cachedBeaconRpc(path)
+      if (status === 404) {
         searchSlot += 1n
         continue
       }
-      if (response.status !== 200)
-        throw new Error(`Unexpected response getting attestations for ${searchSlot}: ${response.status}: ${await response.text()}`)
-      const slotAttestations = await response.json().then(j => j.data)
       for (const {aggregation_bits, data: {slot, index}} of slotAttestations) {
         const attestedBits = hexStringToBitlist(aggregation_bits)
         const dutyEpoch = parseInt(BigInt(slot) / slotsPerEpoch)
@@ -1084,12 +1096,9 @@ log(3, `fetching withdrawals from ${minBonusWindowStart} to ${maxBonusWindowEnd}
       while (slot < pastLastSlot) {
         if (slot % 100n == 0n) log(3, `up to ${slot}...`)
         const path = `/eth/v2/beacon/blocks/${slot}`
-        const url = new URL(`${beaconRpcUrl}${path}`)
-        const response = await fetch(url)
-        if (response.status !== 200 && response.status !== 404)
-          throw new Error(`Unexpected response getting withdrawals for ${slot}: ${response.status}: ${await response.text()}`)
-        const slotWithdrawals = response.status === 404 ? [] :
-          await response.json().then(j => j.data.message.body.execution_payload.withdrawals)
+        const {status, json: {data}} = await cachedBeaconRpc(path)
+        const slotWithdrawals = status === 404 ? [] :
+          data.message.body.execution_payload.withdrawals
         for (const {address, amount} of slotWithdrawals) {
           const minipoolAddress = ethers.getAddress(address)
           const {rewardStartBcSlot, rewardEndBcSlot} = bonusWindowsByMinipool[minipoolAddress] || {rewardEndBcSlot: 0n}
