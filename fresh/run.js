@@ -57,7 +57,6 @@ const ln = (x) => (log2(x) * oneEther) / 1442695040888963407n
 
 const stringifier = (_, v) => typeof v == 'bigint' ? `0x${v.toString(16)}` : v
 
-const perfUrl = process.env.PERF_URL || 'http://localhost:8789'
 const beaconRpcUrl = process.env.BN_URL || 'http://localhost:5052'
 const provider = new ethers.JsonRpcProvider(process.env.RPC_URL || 'http://localhost:8545')
 const networkName = await provider.getNetwork().then(n => n.name)
@@ -673,42 +672,213 @@ for (const [nodeAddress, smoothingTimes] of nodeSmoothingTimes.entries()) {
 }
 
 const eligiblePubkeysSet = new Set()
+const eligibleIndexToPubkey = new Map()
 for (const s of eligiblePubkeysByNode.values())
-  for (const pubkey of s.values())
+  for (const pubkey of s.values()) {
     eligiblePubkeysSet.add(pubkey)
+    eligibleIndexToPubkey.set(parseInt(validatorStatuses[pubkey].index), pubkey)
+  }
 const eligiblePubkeys = Array.from(eligiblePubkeysSet)
 log(3, `eligiblePubkeys count: ${eligiblePubkeys.length}`)
 log(3, `eligiblePubkeys: ${eligiblePubkeys.slice(0, 5)}...`)
 
 const EPOCHS_PER_QUERY = 32
 
-log(3, `fetching attestations...`)
+log(3, `fetching attestation duties...`)
 {
   let first_epoch = parseInt(bnStartEpoch)
-  const options = {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'}
-  }
   while (first_epoch < targetSlotEpoch) {
     const last_epoch = Math.min(first_epoch + EPOCHS_PER_QUERY, parseInt(targetSlotEpoch))
-    log(3, `...${first_epoch}-${last_epoch}...`)
-    const cacheFilename = `cache/a-${first_epoch}-${last_epoch}.json`
+    log(3, `d: ...${first_epoch}-${last_epoch}...`)
+    const cacheFilename = `cache/d-${first_epoch}-${last_epoch}.json`
+    const dutiesForRange = {}
     if (!existsSync(cacheFilename)) {
-      const attestations = {}
-      options.body = JSON.stringify({ first_epoch, last_epoch, pubkeys: eligiblePubkeys })
-      const response = await fetch(perfUrl, options)
-      if (response.status !== 200)
-        throw new Error(`Unexpected response getting attestations ${first_epoch}-${last_epoch}: ${response.status}: ${await response.text()}`)
-      for (const [pubkey, epochs] of Object.entries(await response.json())) {
-        if (!(pubkey in attestations)) attestations[pubkey] = {}
-        Object.assign(attestations[pubkey], epochs)
+      let epoch = first_epoch
+      while (epoch <= last_epoch) {
+        log(3, `d: ...${epoch}...`)
+        const firstSlotInEpoch = epoch * parseInt(slotsPerEpoch)
+        const path = `/eth/v1/beacon/states/${firstSlotInEpoch}/committees?epoch=${epoch}`
+        const url = new URL(`${beaconRpcUrl}${path}`)
+        const response = await fetch(url)
+        if (response.status !== 200)
+          throw new Error(`Unexpected response getting committees for ${epoch}: ${response.status}: ${await response.text()}`)
+        const committees = await response.json().then(j => j.data)
+        for (const {index, slot, validators} of committees) {
+          for (const [position, validator_index] of validators.entries()) {
+            const selectedIndex = parseInt(validator_index)
+            if (eligibleIndexToPubkey.has(selectedIndex)) {
+              dutiesForRange[selectedIndex] ||= {}
+              dutiesForRange[selectedIndex][epoch] ||= {}
+              dutiesForRange[selectedIndex][epoch].slot = parseInt(slot)
+              dutiesForRange[selectedIndex][epoch].index = parseInt(index)
+              dutiesForRange[selectedIndex][epoch].position = position
+            }
+          }
+        }
+        epoch += 1
       }
-      writeFileSync(cacheFilename, JSON.stringify(attestations))
+      writeFileSync(cacheFilename, JSON.stringify(dutiesForRange))
     }
     first_epoch = last_epoch + 1
   }
 }
-log(3, `fetched attestations`)
+log(3, `fetched duties`)
+
+function hexStringToBitvector(s) {
+  const bitlist = []
+  let hexDigits = s.substring(2)
+  if (hexDigits.length % 2 !== 0)
+    hexDigits = `0${hexDigits}`
+  let i
+  while (hexDigits.length) {
+    const byteStr = hexDigits.substring(0, 2)
+    hexDigits = hexDigits.substring(2)
+    const uint8 = parseInt(`0x${byteStr}`)
+    i = 1
+    while (i < 256) {
+      bitlist.push(!!(uint8 & i))
+      i *= 2
+    }
+  }
+  return bitlist
+}
+
+function hexStringToBitlist(s) {
+  const bitlist = hexStringToBitvector(s)
+  let i = bitlist.length
+  while (!bitlist[--i])
+    bitlist.pop()
+  bitlist.pop()
+  return bitlist
+}
+
+const maxDutiesToStore = 3
+const dutiesByFilename = {}
+const dutiesFilenamesMRU = []
+function updateDutiesMRU(cacheFilename) {
+  const index = dutiesFilenamesMRU.indexOf(cacheFilename)
+  if (0 <= index) dutiesFilenamesMRU.splice(index, 1)
+  dutiesFilenamesMRU.unshift(cacheFilename)
+}
+function getLastEpoch(firstEpoch) {
+  return Math.min(firstEpoch + EPOCHS_PER_QUERY, parseInt(targetSlotEpoch))
+}
+function addDutiesRange(firstEpoch, lastEpoch) {
+  const cacheFilename = `cache/d-${firstEpoch}-${lastEpoch}.json`
+  if (!(cacheFilename in dutiesByFilename)) {
+    dutiesByFilename[cacheFilename] = JSON.parse(readFileSync(cacheFilename))
+    if (Object.keys(dutiesByFilename).length > maxDutiesToStore) {
+      const mru = dutiesFilenamesMRU.pop()
+      delete dutiesByFilename[mru]
+    }
+  }
+  return cacheFilename
+}
+function getRangeFromFilename(cacheFilename) {
+  const [ , firstStr, lastStr, ] = cacheFilename.split('-')
+  const firstEpoch = parseInt(firstStr)
+  const lastEpoch = parseInt(lastStr)
+  return {firstEpoch, lastEpoch}
+}
+function getDutiesContainingEpoch(epoch) {
+  if (epoch < bnStartEpoch) return {}
+  let lastLastEpoch = parseInt(bnStartEpoch) - 1
+  for (const [cacheFilename, duties] of Object.entries(dutiesByFilename)) {
+    const {firstEpoch, lastEpoch} = getRangeFromFilename(cacheFilename)
+    if (lastLastEpoch < lastEpoch) lastLastEpoch = lastEpoch
+    if (firstEpoch <= epoch && epoch <= lastEpoch) {
+      updateDutiesMRU(cacheFilename)
+      return duties
+    }
+  }
+  while (lastLastEpoch <= targetSlotEpoch) {
+    const firstEpoch = lastLastEpoch + 1
+    const lastEpoch = getLastEpoch(firstEpoch)
+    if (firstEpoch <= epoch && epoch <= lastEpoch) {
+      const cacheFilename = addDutiesRange(firstEpoch, lastEpoch)
+      updateDutiesMRU(cacheFilename)
+      return dutiesByFilename[cacheFilename]
+    }
+    else {
+      lastLastEpoch = lastEpoch
+    }
+  }
+  throw new Error(`Failed to find duties containing ${epoch}`)
+}
+
+log(3, `fetching attestations...`)
+{
+  const attestationsWithEpochs = []
+  function pushNextEpoch(epoch) {
+    const attestations = {}
+    attestationsWithEpochs.push({epoch, attestations})
+    return attestations
+  }
+  let searchEpoch = parseInt(bnStartEpoch)
+  pushNextEpoch(searchEpoch)
+  while (searchEpoch <= targetSlotEpoch + 1n) {
+    if (attestationsWithEpochs[0].epoch + 1 < searchEpoch) {
+      const {epoch, attestations} = attestationsWithEpochs.shift()
+      if (!attestationsWithEpochs.length) pushNextEpoch(epoch + 1)
+      const cacheFilename = `cache/a-${epoch}.json`
+      writeFileSync(cacheFilename, JSON.stringify(attestations))
+      log(3, `a: caching ${epoch}`)
+    }
+
+    if (existsSync(`cache/a-${attestationsWithEpochs[0].epoch}.json`)) {
+      const {epoch} = attestationsWithEpochs.shift()
+      log(3, `a: skipping already cached ${epoch}`)
+      if (!attestationsWithEpochs.length) pushNextEpoch(epoch + 1)
+      searchEpoch = attestationsWithEpochs[0].epoch
+      continue
+    }
+
+    log(3, `a: ...${searchEpoch}...`)
+
+    const firstSlotInSearchEpoch = BigInt(searchEpoch) * slotsPerEpoch
+    let searchSlot = firstSlotInSearchEpoch
+    while (searchSlot < firstSlotInSearchEpoch + slotsPerEpoch) {
+      const path = `/eth/v1/beacon/blocks/${searchSlot}/attestations`
+      const url = `${beaconRpcUrl}${path}`
+      const response = await fetch(url)
+      if (response.status === 404) {
+        searchSlot += 1n
+        continue
+      }
+      if (response.status !== 200)
+        throw new Error(`Unexpected response getting attestations for ${searchSlot}: ${response.status}: ${await response.text()}`)
+      const slotAttestations = await response.json().then(j => j.data)
+      for (const {aggregation_bits, data: {slot, index}} of slotAttestations) {
+        const attestedBits = hexStringToBitlist(aggregation_bits)
+        const dutyEpoch = parseInt(BigInt(slot) / slotsPerEpoch)
+        if (dutyEpoch < attestationsWithEpochs[0].epoch) continue
+        let attestations
+        for (const {epoch, attestations: obj} of attestationsWithEpochs) {
+          if (epoch === dutyEpoch) {
+            attestations = obj
+            break
+          }
+        }
+        if (!attestations) {
+          const lastEpoch = attestationsWithEpochs.at(-1).epoch
+          if (lastEpoch + 1 !== dutyEpoch)
+            throw new Error(`Unexpected dutyEpoch encountered ${dutyEpoch} ${searchSlot} ${lastEpoch}`)
+          attestations = pushNextEpoch(dutyEpoch)
+        }
+        const duties = getDutiesContainingEpoch(dutyEpoch)
+        for (const [validatorIndex, epochs] of Object.entries(duties)) {
+          const {slot: dutySlot, index: dutyIndex, position} = epochs[dutyEpoch] || {}
+          if (parseInt(slot) === dutySlot && parseInt(index) === dutyIndex && attestedBits[position]) {
+            if (!(attestations[validatorIndex] <= searchSlot))
+              attestations[validatorIndex] = parseInt(searchSlot)
+          }
+        }
+      }
+      searchSlot += 1n
+    }
+    searchEpoch += 1
+  }
+}
 
 let totalMinipoolScore = 0n
 let successfulAttestations = 0n
@@ -735,16 +905,17 @@ log(3, `scoring attestations...`)
       }
     }
     else {
-      const attestationCacheFilename = `cache/a-${first_epoch}-${last_epoch}.json`
-      const attestations = JSON.parse(readFileSync(attestationCacheFilename))
-      for (const [pubkey, epochs] of Object.entries(attestations)) {
+      const dutiesCacheFilename = `cache/d-${first_epoch}-${last_epoch}.json`
+      const duties = JSON.parse(readFileSync(dutiesCacheFilename))
+      for (const [validatorIndex, epochs] of Object.entries(duties)) {
+        const pubkey = eligibleIndexToPubkey.get(parseInt(validatorIndex))
         const minipoolAddress = minipoolsByPubkey.get(pubkey)
         const nodeAddress = elState[minipoolAddress]['getNodeAddress']
         const {optInTime, optOutTime} = nodeSmoothingTimes.get(nodeAddress)
-        for (const [epoch, {slot, attested_slot}] of Object.entries(epochs)) {
-          const slotIndex = BigInt(slot)
-          if (slotIndex < bnStartBlock) continue
-          const blockTime = genesisTime + secondsPerSlot * slotIndex
+        for (const [epoch, {slot}] of Object.entries(epochs)) {
+          const dutySlot = BigInt(slot)
+          if (dutySlot < bnStartBlock) continue
+          const blockTime = genesisTime + secondsPerSlot * dutySlot
           if (blockTime < optInTime || blockTime > optOutTime) continue
           const statusTime = BigInt(elState[minipoolAddress]['getStatusTime'])
           if (blockTime < statusTime) continue
@@ -752,7 +923,9 @@ log(3, `scoring attestations...`)
             minipoolPerformanceForRange[minipoolAddress] = {
               score: 0n, successes: 0, missing: []
             }
-          if (!attested_slot || attested_slot > slotIndex + slotsPerEpoch) {
+          const attestations = JSON.parse(readFileSync(`cache/a-${epoch}.json`))
+          const attestedSlot = attestations[validatorIndex]
+          if (!attestedSlot || BigInt(attestedSlot) > dutySlot + slotsPerEpoch) {
             minipoolPerformanceForRange[minipoolAddress].missing.push(slot)
             continue
           }
