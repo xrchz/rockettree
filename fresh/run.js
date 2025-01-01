@@ -900,7 +900,7 @@ let totalMinipoolScore = 0n
 let successfulAttestations = 0n
 const minipoolPerformance = {}
 
-const maxAttestationsToStore = 32
+const maxAttestationsToStore = 64
 const attestationsMRU = []
 const attestationsCache = {}
 function getAttestations(epoch) {
@@ -908,6 +908,7 @@ function getAttestations(epoch) {
     attestationsCache[epoch] = JSON.parse(readFileSync(`cache/a-${epoch}.json`))
     if (attestationsMRU.length >= maxAttestationsToStore) {
       const mru = attestationsMRU.pop()
+      // log(3, `DEBUG: hit max attestationsMRU adding ${epoch}, removing ${mru}`)
       delete attestationsCache[mru]
     }
   }
@@ -943,12 +944,15 @@ log(3, `scoring attestations...`)
     else {
       const dutiesCacheFilename = `cache/d-${first_epoch}-${last_epoch}.json`
       const duties = JSON.parse(readFileSync(dutiesCacheFilename))
+      // log(3, `DEBUG: read duties from ${dutiesCacheFilename}`)
       for (const [validatorIndex, epochs] of Object.entries(duties)) {
+        // log(3, `DEBUG: processing validator ${validatorIndex}`)
         const pubkey = eligibleIndexToPubkey.get(parseInt(validatorIndex))
         const minipoolAddress = minipoolsByPubkey.get(pubkey)
         const nodeAddress = elState[minipoolAddress]['getNodeAddress']
         const {optInTime, optOutTime} = nodeSmoothingTimes.get(nodeAddress)
         for (const [epoch, {slot}] of Object.entries(epochs)) {
+          // console.log(`DEBUG: processing epoch ${epoch}`)
           const dutySlot = BigInt(slot)
           if (dutySlot < bnStartBlock) continue
           const blockTime = genesisTime + secondsPerSlot * dutySlot
