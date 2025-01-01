@@ -864,7 +864,6 @@ log(3, `fetching attestations from ${bnStartEpoch} to ${targetSlotEpoch + 1n}...
         continue
       }
       for (const {aggregation_bits, data: {slot, index}} of slotAttestations) {
-        const attestedBits = hexStringToBitlist(aggregation_bits)
         const dutyEpoch = parseInt(BigInt(slot) / slotsPerEpoch)
         if (dutyEpoch < attestationsWithEpochs[0].epoch) continue
         let attestations
@@ -881,6 +880,7 @@ log(3, `fetching attestations from ${bnStartEpoch} to ${targetSlotEpoch + 1n}...
           attestations = pushNextEpoch(dutyEpoch)
         }
         const duties = getDutiesContainingEpoch(dutyEpoch)
+        const attestedBits = hexStringToBitlist(aggregation_bits)
         for (const [validatorIndex, epochs] of Object.entries(duties)) {
           const {slot: dutySlot, index: dutyIndex, position} = epochs[dutyEpoch] || {}
           if (parseInt(slot) === dutySlot && parseInt(index) === dutyIndex && attestedBits[position]) {
