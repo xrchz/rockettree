@@ -355,8 +355,9 @@ log(2, `last (possibly missing) slot in epoch: ${targetBcSlot}`)
 const actualEndTime = genesisTime + ((targetSlotEpoch + 1n) * slotsPerEpoch - 1n) * secondsPerSlot
 log(1, `actualEndTime: ${actualEndTime}`)
 
-async function cachedBeaconRpc(path) {
-  const key = path.replaceAll('/', ':')
+async function cachedBeaconRpc(path, selectKey, select) {
+  const initKey = path.replaceAll('/', ':')
+  const key = selectKey ? `${initKey}+${selectKey}` : initKey
   const cacheFilename = `cache/beacon/${key}.json`
   try {
     return JSON.parse(readFileSync(cacheFilename))
@@ -367,7 +368,11 @@ async function cachedBeaconRpc(path) {
     if (response.status !== 200 && response.status !== 404)
       throw new Error(`Unexpected response status getting ${path}: ${response.status} ${await response.text()}`)
     const json = await response.json()
-    const result = {status: response.status, json}
+    const result = {status: response.status}
+    if (selectKey) {
+      try { result.selected_json = select(json) } catch { }
+    }
+    else result.json = json
     writeFileSync(cacheFilename, JSON.stringify(result))
     return result
   }
@@ -1124,9 +1129,9 @@ log(3, `fetching withdrawals from ${minBonusWindowStart} to ${maxBonusWindowEnd}
       while (slot < pastLastSlot) {
         if (slot % 100n == 0n) log(3, `w: up to ${slot}...`)
         const path = `/eth/v2/beacon/blocks/${slot}`
-        const {status, json: {data}} = await cachedBeaconRpc(path)
-        const slotWithdrawals = status === 404 ? [] :
-          data.message.body.execution_payload.withdrawals
+        const {status, selected_json: withdrawals} = await cachedBeaconRpc(path,
+          'withdrawals', json => json.data.message.body.execution_payload.withdrawals)
+        const slotWithdrawals = status === 404 ? [] : withdrawals
         for (const {address, amount} of slotWithdrawals) {
           const minipoolAddress = ethers.getAddress(address)
           const {rewardStartBcSlot, rewardEndBcSlot} = bonusWindowsByMinipool[minipoolAddress] || {rewardEndBcSlot: 0n}
