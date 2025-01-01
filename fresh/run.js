@@ -926,7 +926,7 @@ log(3, `scoring attestations...`)
   let first_epoch = parseInt(bnStartEpoch)
   while (first_epoch < targetSlotEpoch) {
     const last_epoch = Math.min(first_epoch + EPOCHS_PER_QUERY, parseInt(targetSlotEpoch))
-    log(3, `...${first_epoch}-${last_epoch}...`)
+    log(3, `p: ...${first_epoch}-${last_epoch}...`)
     const cacheFilename = `cache/p-${first_epoch}-${last_epoch}.json`
     let totalMinipoolScoreForRange = 0n
     let successfulAttestationsForRange = 0n
@@ -1122,7 +1122,7 @@ log(3, `fetching withdrawals from ${minBonusWindowStart} to ${maxBonusWindowEnd}
     catch {
       let slot = firstSlot
       while (slot < pastLastSlot) {
-        if (slot % 100n == 0n) log(3, `up to ${slot}...`)
+        if (slot % 100n == 0n) log(3, `w: up to ${slot}...`)
         const path = `/eth/v2/beacon/blocks/${slot}`
         const {status, json: {data}} = await cachedBeaconRpc(path)
         const slotWithdrawals = status === 404 ? [] :
@@ -1145,6 +1145,7 @@ log(3, `fetching withdrawals from ${minBonusWindowStart} to ${maxBonusWindowEnd}
       for (const [minipoolAddress, withdrawn] of Object.entries(minipoolWithdrawalsForRange)) {
         minipoolWithdrawalsForRange[minipoolAddress] = withdrawn.toString()
       }
+      log(3, `w: ${cacheFilename}`)
       writeFileSync(cacheFilename, JSON.stringify(minipoolWithdrawalsForRange))
     }
     for (const [minipoolAddress, withdrawn] of Object.entries(minipoolWithdrawalsForRange)) {
