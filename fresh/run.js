@@ -894,10 +894,31 @@ log(3, `fetching attestations from ${bnStartEpoch} to ${targetSlotEpoch + 1n}...
     searchEpoch += 1
   }
 }
+log(3, `fetched attestations`)
 
 let totalMinipoolScore = 0n
 let successfulAttestations = 0n
 const minipoolPerformance = {}
+
+const maxAttestationsToStore = 32
+const attestationsMRU = []
+const attestationsCache = {}
+function getAttestations(epoch) {
+  if (!(epoch in attestationsCache)) {
+    attestationsCache[epoch] = JSON.parse(readFileSync(`cache/a-${epoch}.json`))
+    if (attestationsMRU.length >= maxAttestationsToStore) {
+      const mru = attestationsMRU.pop()
+      delete attestationsCache[mru]
+    }
+  }
+  else {
+    const index = attestationsMRU.indexOf(epoch)
+    if (index < 0) throw new Error(`${epoch} unexpectedly not in MRU already`)
+    attestationsMRU.splice(index, 1)
+  }
+  attestationsMRU.unshift(epoch)
+  return attestationsCache[epoch]
+}
 
 log(3, `scoring attestations...`)
 {
@@ -938,7 +959,7 @@ log(3, `scoring attestations...`)
             minipoolPerformanceForRange[minipoolAddress] = {
               score: 0n, successes: 0, missing: []
             }
-          const attestations = JSON.parse(readFileSync(`cache/a-${epoch}.json`))
+          const attestations = getAttestations(epoch)
           const attestedSlot = attestations[validatorIndex]
           if (!attestedSlot || BigInt(attestedSlot) > dutySlot + slotsPerEpoch) {
             minipoolPerformanceForRange[minipoolAddress].missing.push(slot)
