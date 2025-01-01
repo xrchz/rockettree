@@ -807,7 +807,7 @@ function getDutiesContainingEpoch(epoch) {
       return duties
     }
   }
-  while (lastLastEpoch <= targetSlotEpoch) {
+  while (lastLastEpoch < targetSlotEpoch) {
     const firstEpoch = lastLastEpoch + 1
     const lastEpoch = getLastEpoch(firstEpoch)
     if (firstEpoch <= epoch && epoch <= lastEpoch) {
@@ -819,10 +819,11 @@ function getDutiesContainingEpoch(epoch) {
       lastLastEpoch = lastEpoch
     }
   }
-  throw new Error(`Failed to find duties containing ${epoch}`)
+  if (epoch == targetSlotEpoch + 1n) return {}
+  else throw new Error(`Failed to find duties containing ${epoch}`)
 }
 
-log(3, `fetching attestations...`)
+log(3, `fetching attestations from ${bnStartEpoch} to ${targetSlotEpoch + 1n}...`)
 {
   const attestationsWithEpochs = []
   function pushNextEpoch(epoch) {
@@ -832,7 +833,7 @@ log(3, `fetching attestations...`)
   }
   let searchEpoch = parseInt(bnStartEpoch)
   pushNextEpoch(searchEpoch)
-  while (searchEpoch <= targetSlotEpoch + 1n) {
+  while (searchEpoch <= targetSlotEpoch + 2n) {
     if (attestationsWithEpochs[0].epoch + 1 < searchEpoch) {
       const {epoch, attestations} = attestationsWithEpochs.shift()
       if (!attestationsWithEpochs.length) pushNextEpoch(epoch + 1)
@@ -840,6 +841,8 @@ log(3, `fetching attestations...`)
       writeFileSync(cacheFilename, JSON.stringify(attestations))
       log(3, `a: caching ${epoch}`)
     }
+
+    if (searchEpoch > targetSlotEpoch + 1n) break
 
     if (existsSync(`cache/a-${attestationsWithEpochs[0].epoch}.json`)) {
       const {epoch} = attestationsWithEpochs.shift()
