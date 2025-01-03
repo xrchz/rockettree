@@ -1166,13 +1166,15 @@ for (const [minipoolAddress, consensusIncome] of Object.entries(minipoolWithdraw
   const currentBond = BigInt(elState[minipoolAddress]['getNodeDepositBalance'])
   const currentFee = BigInt(elState[minipoolAddress]['getNodeFee'])
   const nodeAddress = elState[minipoolAddress]['getNodeAddress']
-  const bonusFee = getTotalFee(currentFee, currentBond, nodeAddress) - currentFee
+  const effectiveCommission = getTotalFee(currentFee, currentBond, nodeAddress)
+  const bonusFee = effectiveCommission - currentFee
   const bonusShare = bonusFee * (thirtyTwoEther - currentBond) / thirtyTwoEther
   const minipoolBonus = max(0n, consensusIncome * bonusShare / oneEther)
   if (!(minipoolAddress in minipoolPerformance)) {
     // console.log(`WARNING: ${minipoolAddress} not in minipoolPerformance`)
     minipoolPerformance[minipoolAddress] = {}
   }
+  minipoolPerformance[minipoolAddress].effectiveCommission = effectiveCommission
   minipoolPerformance[minipoolAddress].bonus = minipoolBonus
   minipoolPerformance[minipoolAddress].consensusIncome = consensusIncome
   nodeBonus[nodeAddress] ||= 0n
@@ -1180,7 +1182,8 @@ for (const [minipoolAddress, consensusIncome] of Object.entries(minipoolWithdraw
   totalConsensusBonus += minipoolBonus
 }
 
-writeFileSync('minipool-performance.json', JSON.stringify(minipoolPerformance, stringifier))
+writeFileSync(`minipool-performance-${currentIndex}.json`,
+  JSON.stringify(minipoolPerformance, stringifier))
 
 const remainingBalance = smoothingPoolBalance - totalEthForMinipools
 if (totalConsensusBonus > remainingBalance) {
@@ -1215,7 +1218,8 @@ nodeRewards.forEach(({smoothing_pool_eth, collateral_rpl, oracle_dao_rpl}, nodeA
                                       RPL: (collateral_rpl + oracle_dao_rpl).toString()}
   }
 })
-writeFileSync('node-rewards.json', JSON.stringify(nodeRewardsObject))
+writeFileSync(`node-rewards-${currentIndex}.json`,
+  JSON.stringify(nodeRewardsObject))
 
 const nullHash = ethers.hexlify(new Uint8Array(32))
 const leafValues = Array.from(nodeHashes.values()).sort()
